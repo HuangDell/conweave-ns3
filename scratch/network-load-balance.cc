@@ -320,7 +320,7 @@ void cnp_freq_monitoring(FILE *fout, Ptr<RdmaHw> rdmahw) {
  * - the number of active connections at RNICS
  */
 void periodic_monitoring(FILE *fout_voq, FILE *fout_voq_detail, FILE *fout_uplink, FILE *fout_conn,
-                         FILE *fout_path_delay, uint32_t *lb_mode) {
+                         uint32_t *lb_mode) {
     uint32_t lb_mode_val = *lb_mode;
     uint64_t now = Simulator::Now().GetNanoSeconds();
     for (const auto &tor2If : torId2UplinkIf) {  // for each TOR switches
@@ -359,8 +359,10 @@ void periodic_monitoring(FILE *fout_voq, FILE *fout_voq_detail, FILE *fout_uplin
             auto dev = DynamicCast<QbbNetDevice>(swNode->GetDevice(iface));
             uint64_t q_bytes = dev ? dev->GetQueue()->GetNBytesTotal() : 0;
             uint64_t rate_bps = dev ? dev->GetDataRate().GetBitRate() : 0;
-            fprintf(fout_path_delay, "%lu,%u,%u,%lu,%lu,%lu\n", now, tor2If.first, iface, q_bytes,
-                    uplink_txbyte, rate_bps);
+            if (path_delay_output) {
+                fprintf(path_delay_output, "%lu,%u,%u,%lu,%lu,%lu\n", now, tor2If.first, iface,
+                        q_bytes, uplink_txbyte, rate_bps);
+            }
         }
     }
 
@@ -385,7 +387,7 @@ void periodic_monitoring(FILE *fout_voq, FILE *fout_voq_detail, FILE *fout_uplin
     if (Simulator::Now() < Seconds(flowgen_stop_time + 0.05)) {
         // recursive callback
         Simulator::Schedule(NanoSeconds(switch_mon_interval), &periodic_monitoring, fout_voq,
-                            fout_voq_detail, fout_uplink, fout_conn, fout_path_delay, lb_mode);  // every 10us
+                            fout_voq_detail, fout_uplink, fout_conn, lb_mode);  // every 10us
     }
     return;
 }
@@ -1793,7 +1795,7 @@ int main(int argc, char *argv[]) {
         }
     }
     Simulator::Schedule(Seconds(flowgen_start_time), &periodic_monitoring, voq_output,
-                        voq_detail_output, uplink_output, conn_output, path_delay_output, &lb_mode);
+                        voq_detail_output, uplink_output, conn_output, &lb_mode);
 
     //
     // Now, do the actual simulation.
