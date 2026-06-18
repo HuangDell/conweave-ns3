@@ -102,6 +102,7 @@ FILE *voq_output = NULL;
 FILE *voq_detail_output = NULL;
 FILE *uplink_output = NULL;
 FILE *conn_output = NULL;
+FILE *path_delay_output = NULL;  // Phase0: per-ToR-uplink path-delay sampler
 
 std::string data_rate, link_delay, topology_file, flow_file;
 std::string flow_input_file = "flow.txt";
@@ -113,6 +114,7 @@ std::string voq_mon_file = "voq.txt";
 std::string voq_mon_detail_file = "voq_detail.txt";
 std::string uplink_mon_file = "uplink.txt";
 std::string conn_mon_file = "conn.txt";
+std::string path_delay_mon_file = "path_delay.txt";  // Phase0
 std::string est_error_output_file = "est_error.txt";
 
 // CC params
@@ -318,7 +320,7 @@ void cnp_freq_monitoring(FILE *fout, Ptr<RdmaHw> rdmahw) {
  * - the number of active connections at RNICS
  */
 void periodic_monitoring(FILE *fout_voq, FILE *fout_voq_detail, FILE *fout_uplink, FILE *fout_conn,
-                         uint32_t *lb_mode) {
+                         FILE *fout_path_delay, uint32_t *lb_mode) {
     uint32_t lb_mode_val = *lb_mode;
     uint64_t now = Simulator::Now().GetNanoSeconds();
     for (const auto &tor2If : torId2UplinkIf) {  // for each TOR switches
@@ -350,6 +352,15 @@ void periodic_monitoring(FILE *fout_voq, FILE *fout_voq_detail, FILE *fout_uplin
             // monitor uplink txBytes <time, ToRId, OutDev, Bytes>
             uint64_t uplink_txbyte = swNode->GetTxBytesOutDev(iface);
             fprintf(fout_uplink, "%lu,%u,%u,%lu\n", now, tor2If.first, iface, uplink_txbyte);
+
+            // Phase0 path-delay sampler: per-uplink egress queue occupancy + rate.
+            // queue_delay can be derived offline as qbytes*8 / rate_bps.
+            // <time_ns, ToRId, OutDev, egress_qbytes, cum_txbytes, rate_bps>
+            auto dev = DynamicCast<QbbNetDevice>(swNode->GetDevice(iface));
+            uint64_t q_bytes = dev ? dev->GetQueue()->GetNBytesTotal() : 0;
+            uint64_t rate_bps = dev ? dev->GetDataRate().GetBitRate() : 0;
+            fprintf(fout_path_delay, "%lu,%u,%u,%lu,%lu,%lu\n", now, tor2If.first, iface, q_bytes,
+                    uplink_txbyte, rate_bps);
         }
     }
 
@@ -374,7 +385,7 @@ void periodic_monitoring(FILE *fout_voq, FILE *fout_voq_detail, FILE *fout_uplin
     if (Simulator::Now() < Seconds(flowgen_stop_time + 0.05)) {
         // recursive callback
         Simulator::Schedule(NanoSeconds(switch_mon_interval), &periodic_monitoring, fout_voq,
-                            fout_voq_detail, fout_uplink, fout_conn, lb_mode);  // every 10us
+                            fout_voq_detail, fout_uplink, fout_conn, fout_path_delay, lb_mode);  // every 10us
     }
     return;
 }
@@ -1051,6 +1062,9 @@ int main(int argc, char *argv[]) {
             } else if (key.compare("CONN_MON_FILE") == 0) {
                 conf >> conn_mon_file;
                 std::cerr << "CONN_MON_FILE\t\t\t\t" << conn_mon_file << '\n';
+            } else if (key.compare("PATH_DELAY_MON_FILE") == 0) {
+                conf >> path_delay_mon_file;
+                std::cerr << "PATH_DELAY_MON_FILE\t\t\t\t" << path_delay_mon_file << '\n';
             } else if (key.compare("QLEN_MON_START") == 0) {
                 conf >> qlen_mon_start;
                 std::cerr << "QLEN_MON_START\t\t\t\t" << qlen_mon_start << '\n';
@@ -1751,6 +1765,7 @@ int main(int argc, char *argv[]) {
 
     uplink_output = fopen(uplink_mon_file.c_str(), "w");  // common
     conn_output = fopen(conn_mon_file.c_str(), "w");      // common
+    path_delay_output = fopen(path_delay_mon_file.c_str(), "w");  // Phase0
 
     // update torId2UplinkIf, torId2DownlinkIf
     for (size_t ToRId = 0; ToRId < Settings::node_num; ToRId++) {
@@ -1778,7 +1793,7 @@ int main(int argc, char *argv[]) {
         }
     }
     Simulator::Schedule(Seconds(flowgen_start_time), &periodic_monitoring, voq_output,
-                        voq_detail_output, uplink_output, conn_output, &lb_mode);
+                        voq_detail_output, uplink_output, conn_output, path_delay_output, &lb_mode);
 
     //
     // Now, do the actual simulation.

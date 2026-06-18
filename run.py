@@ -31,6 +31,7 @@ VOQ_MON_FILE mix/output/{id}/{id}_out_voq.txt
 VOQ_MON_DETAIL_FILE mix/output/{id}/{id}_out_voq_per_dst.txt
 UPLINK_MON_FILE mix/output/{id}/{id}_out_uplink.txt
 CONN_MON_FILE mix/output/{id}/{id}_out_conn.txt
+PATH_DELAY_MON_FILE mix/output/{id}/{id}_out_path_delay.txt
 EST_ERROR_MON_FILE mix/output/{id}/{id}_out_est_error.txt
 
 QLEN_MON_START {qlen_mon_start}
