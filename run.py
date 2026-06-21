@@ -20,7 +20,7 @@ MAX_RAND_RANGE = 1000000000
 
 # config template
 config_template = """TOPOLOGY_FILE config/{topo}.txt
-FLOW_FILE config/{flow}.txt
+FLOW_FILE {flow_file}
 
 FLOW_INPUT_FILE mix/output/{id}/{id}_in.txt
 CNP_OUTPUT_FILE mix/output/{id}/{id}_out_cnp.txt
@@ -146,6 +146,8 @@ def main():
                         default='leaf_spine_128_100G', help="the name of the topology file (default: leaf_spine_128_100G_OS2)")
     parser.add_argument('--cdf', dest='cdf', action='store',
                         default='AliStorage2019', help="the name of the cdf file (default: AliStorage2019)")
+    parser.add_argument('--flow-file', dest='flow_file', action='store',
+                        default=None, help="use an existing ConWeave flow file instead of generating one from a CDF")
     parser.add_argument('--enforce_win', dest='enforce_win', action='store',
                         type=int, default=0, help="enforce to use window scheme (default: 0)")
     parser.add_argument('--sw_monitoring_interval', dest='sw_monitoring_interval', action='store',
@@ -215,30 +217,38 @@ def main():
         n_host = int(line[0]) - int(line[1])
 
     assert (hostload >= 0 and hostload < 100)
-    flow = "L_{load:.2f}_CDF_{cdf}_N_{n_host}_T_{time}ms_B_{bw}_flow".format(
-        load=hostload, cdf=args.cdf, n_host=n_host, time=int(float(args.simul_time)*1000), bw=bw)
+    if args.flow_file:
+        flow_file = os.path.abspath(args.flow_file)
+        if not exists(flow_file):
+            raise FileNotFoundError(flow_file)
+        flow = os.path.splitext(os.path.basename(flow_file))[0]
+        print("Using existing flow file: {}".format(flow_file))
+    else:
+        flow = "L_{load:.2f}_CDF_{cdf}_N_{n_host}_T_{time}ms_B_{bw}_flow".format(
+            load=hostload, cdf=args.cdf, n_host=n_host, time=int(float(args.simul_time)*1000), bw=bw)
+        flow_file = "config/" + flow + ".txt"
 
-    # check the file exists
-    if (exists(os.getcwd() + "/config/" + flow + ".txt")):
-        print("Input traffic file with load:{load:.2f}, cdf:{cdf}, n_host:{n_host} already exists".format(
-            load=hostload, cdf=cdf, n_host=n_host))
-    else:  # make the input traffic file
-        print("Generate a input traffic file...")
-        print("python ./traffic_gen/traffic_gen.py -c {cdf} -n {n_host} -l {load} -b {bw} -t {time} -o {output}".format(
-            cdf=os.getcwd() + "/../traffic_gen/" + args.cdf + ".txt",
-            n_host=n_host,
-            load=hostload / 100.0,
-            bw=args.bw + "G",
-            time=args.simul_time,
-            output=os.getcwd() + "/config/" + flow + ".txt"))
+        # check the file exists
+        if (exists(os.getcwd() + "/" + flow_file)):
+            print("Input traffic file with load:{load:.2f}, cdf:{cdf}, n_host:{n_host} already exists".format(
+                load=hostload, cdf=cdf, n_host=n_host))
+        else:  # make the input traffic file
+            print("Generate a input traffic file...")
+            print("python ./traffic_gen/traffic_gen.py -c {cdf} -n {n_host} -l {load} -b {bw} -t {time} -o {output}".format(
+                cdf=os.getcwd() + "/../traffic_gen/" + args.cdf + ".txt",
+                n_host=n_host,
+                load=hostload / 100.0,
+                bw=args.bw + "G",
+                time=args.simul_time,
+                output=os.getcwd() + "/" + flow_file))
 
-        os.system("python ./traffic_gen/traffic_gen.py -c {cdf} -n {n_host} -l {load} -b {bw} -t {time} -o {output}".format(
-            cdf=os.getcwd() + "/traffic_gen/" + args.cdf + ".txt",
-            n_host=n_host,
-            load=hostload / 100.0,
-            bw=args.bw + "G",
-            time=args.simul_time,
-            output=os.getcwd() + "/config/" + flow + ".txt"))
+            os.system("python ./traffic_gen/traffic_gen.py -c {cdf} -n {n_host} -l {load} -b {bw} -t {time} -o {output}".format(
+                cdf=os.getcwd() + "/traffic_gen/" + args.cdf + ".txt",
+                n_host=n_host,
+                load=hostload / 100.0,
+                bw=args.bw + "G",
+                time=args.simul_time,
+                output=os.getcwd() + "/" + flow_file))
 
     # sanity check - bandwidth
     with open("config/{topo}.txt".format(topo=args.topo), 'r') as f_topo:
@@ -359,7 +369,7 @@ def main():
         int_multi = 1
         ewma_gain = 0.00390625
 
-        config = config_template.format(id=config_ID, topo=topo, flow=flow,
+        config = config_template.format(id=config_ID, topo=topo, flow_file=flow_file,
                                         qlen_mon_start=qlen_mon_start, qlen_mon_end=qlen_mon_end, flowgen_start_time=flowgen_start_time,
                                         flowgen_stop_time=flowgen_stop_time, sw_monitoring_interval=sw_monitoring_interval,
                                         load=netload, buffer_size=buffer, lb_mode=lb_mode, cwh_tx_expiry_time=cwh_tx_expiry_time,
@@ -429,4 +439,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
