@@ -86,6 +86,7 @@ PACKET_PAYLOAD_SIZE 1000
 
 
 LINK_DOWN 0 0 0
+LINK_DEGRADE {link_degrade}
 KMAX_MAP {kmax_map}
 KMIN_MAP {kmin_map}
 PMAX_MAP {pmax_map}
@@ -153,6 +154,20 @@ def main():
     parser.add_argument('--sw_monitoring_interval', dest='sw_monitoring_interval', action='store',
                         type=int, default=10000, help="interval of sampling statistics for queue status (default: 10000ns)")
 
+    # #### LINK DEGRADATION (v4) ####
+    parser.add_argument('--degrade_link', dest='degrade_link', action='store', default=None,
+                        help="link to degrade as 'A,B' node IDs, e.g. '128,136' (default: none)")
+    parser.add_argument('--degrade_frac', dest='degrade_frac', action='store', type=float,
+                        default=0.6, help="degraded effective-capacity fraction of nominal (default: 0.6)")
+    parser.add_argument('--degrade_mode', dest='degrade_mode', action='store', default='static',
+                        help="static / flap (default: static)")
+    parser.add_argument('--degrade_start_us', dest='degrade_start_us', action='store', type=int,
+                        default=5000, help="us after flowgen_start to begin degradation (default: 5000)")
+    parser.add_argument('--flap_period_us', dest='flap_period_us', action='store', type=int,
+                        default=20000, help="flap half-period in us; toggles frac<->hi each period (default: 20000)")
+    parser.add_argument('--flap_frac_hi', dest='flap_frac_hi', action='store', type=float,
+                        default=1.0, help="flap 'recovered' fraction (default: 1.0)")
+
     # #### CONWEAVE PARAMETERS ####
     # parser.add_argument('--cwh_extra_reply_deadline', dest='cwh_extra_reply_deadline', action='store',
     #                     type=int, default=4, help="extra-timeout, where reply_deadline = base-RTT + extra-timeout (default: 4us)")
@@ -189,6 +204,29 @@ def main():
     flowgen_stop_time = flowgen_start_time + \
         float(args.simul_time)  # default: 2.0
     sw_monitoring_interval = int(args.sw_monitoring_interval)
+
+    # build LINK_DEGRADE event string (v4): "<n_events> [t_us A B frac]*"
+    # times are us AFTER flowgen_start; static = 1 event, flap = alternating frac/hi events.
+    link_degrade = "0"
+    if args.degrade_link:
+        A, B = [int(x) for x in args.degrade_link.split(",")]
+        simul_us = int(float(args.simul_time) * 1e6)
+        events = []
+        if args.degrade_mode == "static":
+            events.append((args.degrade_start_us, A, B, args.degrade_frac))
+        elif args.degrade_mode == "flap":
+            t = args.degrade_start_us
+            lo = True  # start degraded
+            while t < simul_us:
+                frac = args.degrade_frac if lo else args.flap_frac_hi
+                events.append((t, A, B, frac))
+                t += args.flap_period_us
+                lo = not lo
+        else:
+            raise Exception("CONFIG ERROR : unknown --degrade_mode {}".format(args.degrade_mode))
+        link_degrade = "{} ".format(len(events)) + " ".join(
+            "{} {} {} {}".format(t, a, b, f) for (t, a, b, f) in events)
+        print("LINK_DEGRADE = {}".format(link_degrade))
 
     # get over-subscription ratio from topoogy name
 
@@ -380,7 +418,8 @@ def main():
                                         ai=ai, hai=hai, dctcp_ai=dctcp_ai,
                                         has_win=has_win, var_win=var_win,
                                         fast_react=fast_react, mi=mi, int_multi=int_multi, ewma_gain=ewma_gain,
-                                        kmax_map=kmax_map, kmin_map=kmin_map, pmax_map=pmax_map)
+                                        kmax_map=kmax_map, kmin_map=kmin_map, pmax_map=pmax_map,
+                                        link_degrade=link_degrade)
     else:
         print("unknown cc:{}".format(args.cc))
 

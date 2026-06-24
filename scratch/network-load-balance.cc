@@ -29,7 +29,9 @@
 
 #include <fstream>
 #include <iostream>
+#include <tuple>
 #include <unordered_map>
+#include <vector>
 
 #include "ns3/applications-module.h"
 #include "ns3/broadcom-node.h"
@@ -143,6 +145,10 @@ unordered_map<uint32_t, Ptr<SwitchNode>> idxNodeToR;  // Id -> Ptr
 uint64_t link_down_time = 0;
 uint32_t link_down_A = 0, link_down_B = 0;
 uint32_t buffer_size = 0;  // 0 to set buffer size automatically
+
+// config of link-degradation scenario (v4): continuous effective-capacity drop.
+// each event = (t_us after flowgen_start, nodeA, nodeB, frac), applied symmetrically.
+std::vector<std::tuple<uint64_t, uint32_t, uint32_t, double>> link_degrade_events;
 
 // Added from Here
 double load = 10.0;
@@ -715,6 +721,25 @@ void TakeDownLink(NodeContainer n, Ptr<Node> a, Ptr<Node> b) {
     }
 }
 
+/**
+ * @brief degrade the effective capacity of link a<->b to (frac * nominal), symmetrically.
+ * The link stays UP (no reroute, no table clear); only its serialization rate drops, modeling
+ * gray failure / FEC-limited / LAG-member-loss capacity degradation. frac=1.0 restores nominal.
+ */
+void DegradeLink(NodeContainer n, Ptr<Node> a, Ptr<Node> b, double frac) {
+    if (nbr2if.find(a) == nbr2if.end() || nbr2if[a].find(b) == nbr2if[a].end()) return;
+    // nbr2if[][].bw holds the NOMINAL bitrate captured at setup, so frac is always vs nominal.
+    uint64_t nomA = nbr2if[a][b].bw;
+    uint64_t nomB = nbr2if[b][a].bw;
+    auto da = DynamicCast<QbbNetDevice>(a->GetDevice(nbr2if[a][b].idx));
+    auto db = DynamicCast<QbbNetDevice>(b->GetDevice(nbr2if[b][a].idx));
+    da->SetDataRate(DataRate((uint64_t)(nomA * frac)));
+    db->SetDataRate(DataRate((uint64_t)(nomB * frac)));
+    std::cout << "*** LINK_DEGRADE @ " << Simulator::Now() << " : " << a->GetId() << "<->"
+              << b->GetId() << " frac=" << frac << " (rate=" << (uint64_t)(nomA * frac) << "bps)"
+              << std::endl;
+}
+
 uint64_t get_nic_rate(NodeContainer &n) {
     uint64_t avg_nic_rate;
     uint64_t n_servers = 0;
@@ -1010,6 +1035,19 @@ int main(int argc, char *argv[]) {
                 conf >> link_down_time >> link_down_A >> link_down_B;
                 std::cerr << "LINK_DOWN\t\t\t\t" << link_down_time << ' ' << link_down_A << ' '
                           << link_down_B << '\n';
+            } else if (key.compare("LINK_DEGRADE") == 0) {
+                uint32_t n_ev;
+                conf >> n_ev;
+                std::cerr << "LINK_DEGRADE\t\t\t\t" << n_ev;
+                for (uint32_t i = 0; i < n_ev; i++) {
+                    uint64_t t_us;
+                    uint32_t A, B;
+                    double frac;
+                    conf >> t_us >> A >> B >> frac;
+                    link_degrade_events.emplace_back(t_us, A, B, frac);
+                    std::cerr << " | " << t_us << ' ' << A << ' ' << B << ' ' << frac;
+                }
+                std::cerr << '\n';
             } else if (key.compare("KMAX_MAP") == 0) {
                 int n_k;
                 conf >> n_k;
@@ -1758,6 +1796,13 @@ int main(int argc, char *argv[]) {
     if (link_down_time > 0) {
         Simulator::Schedule(Seconds(flowgen_start_time) + MicroSeconds(link_down_time),
                             &TakeDownLink, n, n.Get(link_down_A), n.Get(link_down_B));
+    }
+
+    // schedule link degradation events (v4)
+    for (auto &ev : link_degrade_events) {
+        Simulator::Schedule(Seconds(flowgen_start_time) + MicroSeconds(std::get<0>(ev)),
+                            &DegradeLink, n, n.Get(std::get<1>(ev)), n.Get(std::get<2>(ev)),
+                            std::get<3>(ev));
     }
 
     if (lb_mode == 9) {
