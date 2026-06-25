@@ -449,6 +449,10 @@ bool QbbNetDevice::TransmitStart(Ptr<Packet> p) {
     m_currentPkt = p;
     m_phyTxBeginTrace(m_currentPkt);
     Time txTime = Seconds(m_bps.CalculateTxTime(p->GetSize()));
+    // v4 residual-capacity estimator: txTime uses the (possibly degraded) m_bps, so
+    // departedBytes*8 / busyTimeNs recovers the effective serialization rate c_eff.
+    m_txBusyTimeNs += txTime.GetNanoSeconds();
+    m_txDepartedBytes += p->GetSize();
     Time txCompleteTime = txTime + m_tInterframeGap;
     NS_LOG_LOGIC("Schedule TransmitCompleteEvent in " << txCompleteTime.GetSeconds() << "sec");
     Simulator::Schedule(txCompleteTime, &QbbNetDevice::TransmitComplete, this);

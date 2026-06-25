@@ -361,13 +361,17 @@ void periodic_monitoring(FILE *fout_voq, FILE *fout_voq_detail, FILE *fout_uplin
 
             // Phase0 path-delay sampler: per-uplink egress queue occupancy + rate.
             // queue_delay can be derived offline as qbytes*8 / rate_bps.
-            // <time_ns, ToRId, OutDev, egress_qbytes, cum_txbytes, rate_bps>
+            // v4 residual-capacity estimator: tx_busy_ns + tx_departed_bytes give
+            // c_eff = Δdeparted*8 / Δbusy_ns, gated offline on backlog (q_bytes > 0).
+            // <time_ns, ToRId, OutDev, egress_qbytes, cum_txbytes, rate_bps, tx_busy_ns, tx_departed_bytes>
             auto dev = DynamicCast<QbbNetDevice>(swNode->GetDevice(iface));
             uint64_t q_bytes = dev ? dev->GetQueue()->GetNBytesTotal() : 0;
             uint64_t rate_bps = dev ? dev->GetDataRate().GetBitRate() : 0;
+            uint64_t tx_busy_ns = dev ? dev->GetTxBusyTimeNs() : 0;
+            uint64_t tx_departed = dev ? dev->GetTxDepartedBytes() : 0;
             if (path_delay_output) {
-                fprintf(path_delay_output, "%lu,%u,%u,%lu,%lu,%lu\n", now, tor2If.first, iface,
-                        q_bytes, uplink_txbyte, rate_bps);
+                fprintf(path_delay_output, "%lu,%u,%u,%lu,%lu,%lu,%lu,%lu\n", now, tor2If.first,
+                        iface, q_bytes, uplink_txbyte, rate_bps, tx_busy_ns, tx_departed);
             }
         }
     }
