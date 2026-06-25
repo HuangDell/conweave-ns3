@@ -113,6 +113,7 @@ lb_modes = {
 
 topo2bdp = {
     "leaf_spine_128_100G_OS2": 104000,  # 2-tier -> all 100Gbps
+    "leaf_spine_16_100G_OS2": 104000,  # 2-tier (small, G1 fast-validation) -> same path depth/latency as _128
     "fat_k8_100G_OS2": 156000,  # 3-tier -> all 100Gbps
 }
 
