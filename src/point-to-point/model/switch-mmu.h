@@ -10,6 +10,8 @@
 #include "ns3/conga-routing.h"
 #include "ns3/conweave-routing.h"
 #include "ns3/letflow-routing.h"
+#include "ns3/capacity-proportional-routing.h"
+#include "ns3/residual-capacity-estimator.h"
 #include "ns3/settings.h"
 
 
@@ -115,6 +117,10 @@ class SwitchMmu : public Object {
 
     /*------------ ConWeave Objects-------------*/
     ConWeaveRouting m_conweaveRouting;
+
+    /*------------ sflowlet (v4) Objects-------------*/
+    ResidualCapacityEstimator m_residualEstimator;
+    CapacityProportionalRouting m_cpRouting;
 
    private:
     bool m_PFCenabled;

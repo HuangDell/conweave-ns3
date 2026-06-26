@@ -153,6 +153,27 @@ uint32_t SwitchNode::DoLbConWeave(Ptr<const Packet> p, const CustomHeader &ch,
 }
 /*----------------------------------*/
 
+/*-----------------sflowlet (capacity-proportional flowlet)-----------------*/
+uint32_t SwitchNode::DoLbSflowlet(Ptr<Packet> p, CustomHeader &ch,
+                                  const std::vector<int> &nexthops) {
+    if (m_isToR && nexthops.size() == 1) {
+        if (m_isToR_hostIP.find(ch.sip) != m_isToR_hostIP.end() &&
+            m_isToR_hostIP.find(ch.dip) != m_isToR_hostIP.end()) {
+            return nexthops[0];  // intra-pod traffic
+        }
+    }
+
+    /* ONLY called for inter-Pod traffic */
+    uint32_t outPort = m_mmu->m_cpRouting.RouteInput(p, ch);
+    if (outPort == LETFLOW_NULL) {
+        assert(nexthops.size() == 1);  // Receiver's TOR has only one interface to receiver-server
+        outPort = nexthops[0];         // has only one option
+    }
+    assert(std::find(nexthops.begin(), nexthops.end(), outPort) != nexthops.end());
+    return outPort;
+}
+/*----------------------------------*/
+
 void SwitchNode::CheckAndSendPfc(uint32_t inDev, uint32_t qIndex) {
     Ptr<QbbNetDevice> device = DynamicCast<QbbNetDevice>(m_devices[inDev]);
     bool pClasses[qCnt] = {0};
@@ -272,6 +293,8 @@ int SwitchNode::GetOutDev(Ptr<Packet> p, CustomHeader &ch) {
             return DoLbLetflow(p, ch, nexthops);
         case 9:
             return DoLbConWeave(p, ch, nexthops); /** DUMMY: Do ECMP */
+        case 11:
+            return DoLbSflowlet(p, ch, nexthops);
         default:
             std::cout << "Unknown lb_mode(" << Settings::lb_mode << ")" << std::endl;
             assert(false);

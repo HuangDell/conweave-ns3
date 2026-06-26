@@ -78,6 +78,14 @@ Time conweave_extraVOQFlushTime = MicroSeconds(32);       // extra for uncertain
 Time conweave_defaultVOQWaitingTime = MicroSeconds(500);  // default flush timer if no history
 bool conweave_pathAwareRerouting = true;
 
+// sflowlet (v4) params: online residual-capacity estimator + capacity-proportional weighting
+Time sflowlet_est_time = MicroSeconds(200);         // estimator sampling/update period
+double sflowlet_ewma_beta = 1.0 / 64.0;             // EWMA weight on backlogged samples
+uint32_t sflowlet_persist_windows = 3;              // consecutive low windows to confirm degradation
+double sflowlet_degrade_ratio = 0.85;               // below this fraction of nominal counts as low
+uint64_t sflowlet_backlog_thresh_bytes = 0;         // backlog gate (q_bytes > thresh)
+uint32_t sflowlet_weight_mode = 1;                  // 0=RANDOM,1=WEIGHTED,2=WCMP
+
 /*------------------------ simulation variables -----------------------------*/
 uint64_t one_hop_delay = 1000;  // nanoseconds
 uint32_t cc_mode = 1;           // mode for congestion control, 1: DCQCN
@@ -363,15 +371,22 @@ void periodic_monitoring(FILE *fout_voq, FILE *fout_voq_detail, FILE *fout_uplin
             // queue_delay can be derived offline as qbytes*8 / rate_bps.
             // v4 residual-capacity estimator: tx_busy_ns + tx_departed_bytes give
             // c_eff = Δdeparted*8 / Δbusy_ns, gated offline on backlog (q_bytes > 0).
-            // <time_ns, ToRId, OutDev, egress_qbytes, cum_txbytes, rate_bps, tx_busy_ns, tx_departed_bytes>
+            // est_resid_bps (col 9): the ONLINE estimate (lb_mode==11 only; else 0),
+            // for cross-checking against the offline c_eff (G1 acceptance).
+            // <time_ns, ToRId, OutDev, egress_qbytes, cum_txbytes, rate_bps, tx_busy_ns, tx_departed_bytes, est_resid_bps>
             auto dev = DynamicCast<QbbNetDevice>(swNode->GetDevice(iface));
             uint64_t q_bytes = dev ? dev->GetQueue()->GetNBytesTotal() : 0;
             uint64_t rate_bps = dev ? dev->GetDataRate().GetBitRate() : 0;
             uint64_t tx_busy_ns = dev ? dev->GetTxBusyTimeNs() : 0;
             uint64_t tx_departed = dev ? dev->GetTxDepartedBytes() : 0;
+            uint64_t est_resid_bps =
+                (lb_mode_val == 11)
+                    ? swNode->m_mmu->m_residualEstimator.GetResidualCapacity(iface)
+                    : 0;
             if (path_delay_output) {
-                fprintf(path_delay_output, "%lu,%u,%u,%lu,%lu,%lu,%lu,%lu\n", now, tor2If.first,
-                        iface, q_bytes, uplink_txbyte, rate_bps, tx_busy_ns, tx_departed);
+                fprintf(path_delay_output, "%lu,%u,%u,%lu,%lu,%lu,%lu,%lu,%lu\n", now, tor2If.first,
+                        iface, q_bytes, uplink_txbyte, rate_bps, tx_busy_ns, tx_departed,
+                        est_resid_bps);
             }
         }
     }
@@ -808,6 +823,16 @@ int main(int argc, char *argv[]) {
                 conf >> v;
                 switch_mon_interval = v;
                 std::cerr << "SW_MONITORING_INTERVAL\t\t\t" << switch_mon_interval << "\n";
+            } else if (key.compare("SFLOWLET_WEIGHT_MODE") == 0) {
+                uint32_t v;
+                conf >> v;
+                sflowlet_weight_mode = v;  // 0=RANDOM,1=WEIGHTED,2=WCMP
+                std::cerr << "SFLOWLET_WEIGHT_MODE\t\t\t" << sflowlet_weight_mode << "\n";
+            } else if (key.compare("SFLOWLET_EST_TIME_US") == 0) {
+                uint32_t v;
+                conf >> v;
+                sflowlet_est_time = Time(MicroSeconds(v));
+                std::cerr << "SFLOWLET_EST_TIME_US\t\t\t" << sflowlet_est_time << "\n";
             } else if (key.compare("CONWEAVE_TX_EXPIRY_TIME") == 0) {
                 uint32_t v;
                 conf >> v;
@@ -1624,6 +1649,10 @@ int main(int argc, char *argv[]) {
                                     swSrc->m_mmu->m_letflowRouting.m_letflowRoutingTable[swDstId]
                                         .insert(pathId);
                                 }
+                                if (lb_mode == 11) {
+                                    swSrc->m_mmu->m_cpRouting.m_letflowRoutingTable[swDstId]
+                                        .insert(pathId);
+                                }
                                 if (lb_mode == 9) {
                                     swSrc->m_mmu->m_conweaveRouting.m_ConWeaveRoutingTable[swDstId]
                                         .insert(pathId);
@@ -1652,6 +1681,11 @@ int main(int argc, char *argv[]) {
                                     }
                                     if (lb_mode == 6) {
                                         swSrc->m_mmu->m_letflowRouting
+                                            .m_letflowRoutingTable[swDstId]
+                                            .insert(pathId);
+                                    }
+                                    if (lb_mode == 11) {
+                                        swSrc->m_mmu->m_cpRouting
                                             .m_letflowRoutingTable[swDstId]
                                             .insert(pathId);
                                     }
@@ -1688,6 +1722,11 @@ int main(int argc, char *argv[]) {
                                         }
                                         if (lb_mode == 6) {
                                             swSrc->m_mmu->m_letflowRouting
+                                                .m_letflowRoutingTable[swDstId]
+                                                .insert(pathId);
+                                        }
+                                        if (lb_mode == 11) {
+                                            swSrc->m_mmu->m_cpRouting
                                                 .m_letflowRoutingTable[swDstId]
                                                 .insert(pathId);
                                         }
@@ -1728,6 +1767,13 @@ int main(int argc, char *argv[]) {
                         uint32_t outPort = nbr2if[node][next].idx;
                         uint64_t bw = nbr2if[node][next].bw;
                         sw->m_mmu->m_congaRouting.SetLinkCapacity(outPort, bw);
+                        // sflowlet: register each local uplink (device + NOMINAL bw) with the
+                        // residual-capacity estimator. bw is nominal (degradation lowers the
+                        // device DataRate later, which is exactly what the estimator detects).
+                        if (lb_mode == 11) {
+                            auto dev = DynamicCast<QbbNetDevice>(node->GetDevice(outPort));
+                            sw->m_mmu->m_residualEstimator.RegisterPort(outPort, dev, bw);
+                        }
                         // printf("Node: %d, interface: %d, bw: %lu\n", swId, outPort, bw);
                     }
                 }
@@ -1757,6 +1803,18 @@ int main(int argc, char *argv[]) {
                         conweave_txExpiryTime, conweave_defaultVOQWaitingTime,
                         conweave_pathPauseTime, conweave_pathAwareRerouting);
                     sw->m_mmu->m_conweaveRouting.SetSwitchInfo(sw->m_isToR, sw->GetId());
+                }
+                if (lb_mode == 11) {
+                    // sflowlet: capacity-proportional flowlet routing + online residual estimator.
+                    sw->m_mmu->m_cpRouting.SetConstants(letflow_agingTime, letflow_flowletTimeout);
+                    sw->m_mmu->m_cpRouting.SetSwitchInfo(sw->m_isToR, sw->GetId());
+                    sw->m_mmu->m_cpRouting.SetWeightMode(sflowlet_weight_mode);
+                    sw->m_mmu->m_cpRouting.SetEstimator(&sw->m_mmu->m_residualEstimator);
+                    sw->m_mmu->m_residualEstimator.SetConstants(
+                        sflowlet_est_time, sflowlet_ewma_beta, sflowlet_persist_windows,
+                        sflowlet_degrade_ratio, sflowlet_backlog_thresh_bytes);
+                    sw->m_mmu->m_residualEstimator.SetSwitchInfo(sw->m_isToR, sw->GetId());
+                    if (sw->m_isToR) sw->m_mmu->m_residualEstimator.Start();
                 }
             }
         }

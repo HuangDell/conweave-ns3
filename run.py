@@ -53,6 +53,9 @@ CONWEAVE_PATH_PAUSE_TIME {cwh_path_pause_time}
 CONWEAVE_EXTRA_VOQ_FLUSH_TIME {cwh_extra_voq_flush_time}
 CONWEAVE_DEFAULT_VOQ_WAITING_TIME {cwh_default_voq_waiting_time}
 
+SFLOWLET_WEIGHT_MODE {sflowlet_weight_mode}
+SFLOWLET_EST_TIME_US {sflowlet_est_time_us}
+
 ALPHA_RESUME_INTERVAL 1
 RATE_DECREASE_INTERVAL 4
 CLAMP_TARGET_RATE 0
@@ -109,6 +112,7 @@ lb_modes = {
     "conga": 3,
     "letflow": 6,
     "conweave": 9,
+    "sflowlet": 11,
 }
 
 topo2bdp = {
@@ -169,6 +173,12 @@ def main():
     parser.add_argument('--flap_frac_hi', dest='flap_frac_hi', action='store', type=float,
                         default=1.0, help="flap 'recovered' fraction (default: 1.0)")
 
+    # #### SFLOWLET (v4) PARAMETERS ####
+    parser.add_argument('--sflowlet_weight_mode', dest='sflowlet_weight_mode', action='store',
+                        default='weighted', help="sflowlet path weighting: random/weighted/wcmp (default: weighted)")
+    parser.add_argument('--sflowlet_est_time_us', dest='sflowlet_est_time_us', action='store', type=int,
+                        default=200, help="sflowlet residual-capacity estimator period in us (default: 200)")
+
     # #### CONWEAVE PARAMETERS ####
     # parser.add_argument('--cwh_extra_reply_deadline', dest='cwh_extra_reply_deadline', action='store',
     #                     type=int, default=4, help="extra-timeout, where reply_deadline = base-RTT + extra-timeout (default: 4us)")
@@ -228,6 +238,13 @@ def main():
         link_degrade = "{} ".format(len(events)) + " ".join(
             "{} {} {} {}".format(t, a, b, f) for (t, a, b, f) in events)
         print("LINK_DEGRADE = {}".format(link_degrade))
+
+    # sflowlet path-weighting mode: name -> int (0=RANDOM,1=WEIGHTED,2=WCMP)
+    sflowlet_weight_modes = {"random": 0, "weighted": 1, "wcmp": 2}
+    if args.sflowlet_weight_mode not in sflowlet_weight_modes:
+        raise Exception("CONFIG ERROR : unknown --sflowlet_weight_mode {}".format(
+            args.sflowlet_weight_mode))
+    sflowlet_weight_mode = sflowlet_weight_modes[args.sflowlet_weight_mode]
 
     # get over-subscription ratio from topoogy name
 
@@ -420,7 +437,9 @@ def main():
                                         has_win=has_win, var_win=var_win,
                                         fast_react=fast_react, mi=mi, int_multi=int_multi, ewma_gain=ewma_gain,
                                         kmax_map=kmax_map, kmin_map=kmin_map, pmax_map=pmax_map,
-                                        link_degrade=link_degrade)
+                                        link_degrade=link_degrade,
+                                        sflowlet_weight_mode=sflowlet_weight_mode,
+                                        sflowlet_est_time_us=args.sflowlet_est_time_us)
     else:
         print("unknown cc:{}".format(args.cc))
 
