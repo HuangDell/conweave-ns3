@@ -22,6 +22,8 @@ ResidualCapacityEstimator::ResidualCapacityEstimator() {
     m_switch_id = (uint32_t)-1;
 }
 
+ResidualCapacityEstimator::~ResidualCapacityEstimator() {}
+
 void ResidualCapacityEstimator::RegisterPort(uint32_t outPort, Ptr<QbbNetDevice> dev,
                                              uint64_t nominalBps) {
     m_devMap[outPort] = dev;

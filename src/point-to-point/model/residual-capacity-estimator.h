@@ -35,6 +35,11 @@ class QbbNetDevice;
 class ResidualCapacityEstimator {
    public:
     ResidualCapacityEstimator();
+    // Out-of-line dtor: m_devMap holds Ptr<QbbNetDevice>, whose destruction needs
+    // the complete type. Defined in the .cc (which includes qbb-net-device.h) so
+    // translation units that only forward-declare QbbNetDevice (e.g. switch-mmu.cc)
+    // don't try to instantiate it against an incomplete type.
+    ~ResidualCapacityEstimator();
 
     /** Register a local uplink: device handle + NOMINAL line rate (bps).
      * Nominal is captured at setup and never changes, so degradation (which
