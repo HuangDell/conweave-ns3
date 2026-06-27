@@ -1581,7 +1581,8 @@ int main(int argc, char *argv[]) {
     }
 
     /* config load balancer's switches using ToR-to-ToR routing */
-    if (lb_mode == 3 || lb_mode == 6 || lb_mode == 9) {  // Conga, Letflow, Conweave
+    if (lb_mode == 3 || lb_mode == 6 || lb_mode == 9 || lb_mode == 11) {
+        // Conga, Letflow, Conweave, sflowlet
         NS_LOG_INFO("Configuring Load Balancer's Switches");
         for (auto &pair : link_pairs) {
             Ptr<Node> probably_host = n.Get(pair.first);
@@ -1598,6 +1599,7 @@ int main(int argc, char *argv[]) {
         // Conga: m_congaFromLeafTable, m_congaToLeafTable, m_congaRoutingTable
         // Letflow: m_letflowRoutingTable
         // Conweave: m_ConWeaveRoutingTable, m_rxToRId2BaseRTT
+        // sflowlet: m_cpRouting.m_letflowRoutingTable
         for (auto i = nextHop.begin(); i != nextHop.end(); i++) {  // every node
             if (i->first->GetNodeType() == 1) {                    // switch
                 Ptr<Node> nodeSrc = i->first;
@@ -1750,7 +1752,7 @@ int main(int argc, char *argv[]) {
             }
         }
 
-        // m_outPort2BitRateMap - only for Conga
+        // m_outPort2BitRateMap for Conga; residual-capacity ports for sflowlet.
         for (auto i = nextHop.begin(); i != nextHop.end(); i++) {  // every node
             if (i->first->GetNodeType() == 1) {                    // switch
                 Ptr<Node> node = i->first;
