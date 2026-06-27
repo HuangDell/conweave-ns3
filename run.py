@@ -6,7 +6,6 @@ import time
 from xmlrpc.client import boolean
 import numpy as np
 import copy
-import shutil
 import random
 from datetime import datetime
 import sys
@@ -122,14 +121,43 @@ topo2bdp = {
 }
 
 FLOWGEN_DEFAULT_TIME = 2.0  # see /traffic_gen/traffic_gen.py::base_t
+SIM_BUILD_DIR = "build"
+SIM_BINARY = os.path.join(SIM_BUILD_DIR, "scratch", "network-load-balance")
+
+
+def reserve_output_dir(output_root):
+    while True:
+        config_ID = str(random.randrange(MAX_RAND_RANGE))
+        output_dir = os.path.join(output_root, config_ID)
+        try:
+            os.makedirs(output_dir)
+            return config_ID, output_dir
+        except FileExistsError:
+            continue
+
+
+def direct_run_env():
+    env = os.environ.copy()
+    if sys.platform == "darwin":
+        path_var = "DYLD_LIBRARY_PATH"
+    elif sys.platform == "win32" or sys.platform == "cygwin":
+        path_var = "PATH"
+    else:
+        path_var = "LD_LIBRARY_PATH"
+
+    lib_dir = os.path.abspath(SIM_BUILD_DIR)
+    current_path = env.get(path_var)
+    env[path_var] = os.pathsep.join(
+        [lib_dir, current_path] if current_path else [lib_dir])
+    return env, path_var, lib_dir
 
 
 def main():
     # make directory if not exists
-    isExist = os.path.exists(os.getcwd() + "/mix/output/")
-    if not isExist:
-        os.makedirs(os.getcwd() + "/mix/output/")
-        print("The new directory is created - {}".format(os.getcwd() + "/mix/output/"))
+    output_root = os.path.join(os.getcwd(), "mix", "output")
+    if not os.path.exists(output_root):
+        os.makedirs(output_root, exist_ok=True)
+        print("The new directory is created - {}".format(output_root))
 
     parser = argparse.ArgumentParser(description='run simulation')
     parser.add_argument('--cc', dest='cc', action='store',
@@ -192,14 +220,6 @@ def main():
     #                     type=int, default=1000, help="timeout value of ConWeave Tx for CLEAR signal (default: 1000us)")
 
     args = parser.parse_args()
-
-    # make running ID of this config
-    # need to check directory exists or not
-    isExist = True
-    config_ID = 0
-    while (isExist):
-        config_ID = str(random.randrange(MAX_RAND_RANGE))
-        isExist = os.path.exists(os.getcwd() + "/mix/output/" + config_ID)
 
     # input parameters
     cc_mode = cc_modes[args.cc]
@@ -353,15 +373,11 @@ def main():
 
     ##################################################################
 
-    # make directory if not exists
-    isExist = os.path.exists(os.getcwd() + "/mix/output/" + config_ID + "/")
-    assert (not isExist)
-    # if not isExist:
-    os.makedirs(os.getcwd() + "/mix/output/" + config_ID + "/")
-    print("The new directory is created  - {}".format(os.getcwd() +
-          "/mix/output/" + config_ID + "/"))
+    # atomically reserve the output directory for this run
+    config_ID, output_dir = reserve_output_dir(output_root)
+    print("The new directory is created  - {}/".format(output_dir))
 
-    config_name = os.getcwd() + "/mix/output/" + config_ID + "/config.txt"
+    config_name = os.path.join(output_dir, "config.txt")
     print("Config filename:{}".format(config_name))
 
     # By default, DCQCN uses no window (rate-based).
@@ -449,19 +465,28 @@ def main():
     # run program
     print("Running simulation...")
     output_log = config_name.replace(".txt", ".log")
-    run_command = "./waf --run 'scratch/network-load-balance {config_name}' > {output_log} 2>&1".format(
-        config_name=config_name, output_log=output_log)
+    if not exists(SIM_BINARY):
+        raise FileNotFoundError(
+            "{} does not exist. Run './waf build' once before starting simulations.".format(SIM_BINARY))
+    sim_binary = os.path.abspath(SIM_BINARY)
+    sim_env, lib_path_var, lib_dir = direct_run_env()
+    run_prefix = "{lib_path_var}={lib_dir}:${lib_path_var}".format(
+        lib_path_var=lib_path_var, lib_dir=lib_dir)
+    run_command = "{run_prefix} {sim_binary} {config_name} > {output_log} 2>&1".format(
+        run_prefix=run_prefix, sim_binary=sim_binary, config_name=config_name, output_log=output_log)
     with open("./mix/.history", "a") as history:
         history.write(run_command + "\n")
         history.write(
-            "./waf --run 'scratch/network-load-balance' --command-template='gdb --args %s {config_name}'\n".format(
-                config_name=config_name)
+            "{run_prefix} gdb --args {sim_binary} {config_name}\n".format(
+                run_prefix=run_prefix, sim_binary=sim_binary, config_name=config_name)
         )
         history.write("\n")
 
     print(run_command)
-    os.system("./waf --run 'scratch/network-load-balance {config_name}' > {output_log} 2>&1".format(
-        config_name=config_name, output_log=output_log))
+    with open(output_log, "w") as log_file:
+        subprocess.check_call([sim_binary, config_name],
+                              stdout=log_file, stderr=subprocess.STDOUT,
+                              env=sim_env)
 
     ####################################################
     #                 Analyze the output FCT           #
