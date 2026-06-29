@@ -110,6 +110,9 @@ class RdmaHw : public Object {
     uint32_t cnp_by_ecn;
     uint32_t cnp_by_ooo;
     uint32_t cnp_total;
+
+    /* G3: per-event OoO log (set by scenario harness; NULL = disabled) */
+    static FILE* s_oooEventLog;
     size_t getIrnBufferOverhead();  // get buffer overhead for IRN
 
     /******************************

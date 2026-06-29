@@ -22,6 +22,7 @@
 
 #include <arpa/inet.h>
 
+#include <cstdint>
 #include <map>
 #include <set>
 #include <vector>
@@ -35,6 +36,16 @@
 #include "ns3/simulator.h"
 
 namespace ns3 {
+
+struct FlowletSwitchEvent {
+    uint64_t time_ns;
+    uint32_t switch_id;
+    uint64_t qpkey;
+    uint32_t old_path;
+    uint32_t new_path;
+    double old_weight;
+    double new_weight;
+};
 
 class CapacityProportionalRouting : public Object {
     friend class SwitchMmu;
@@ -50,6 +61,8 @@ class CapacityProportionalRouting : public Object {
     static uint32_t GetOutPortFromPath(const uint32_t& path, const uint32_t& hopCount);
     static void SetOutPortToPath(uint32_t& path, const uint32_t& hopCount, const uint32_t& outPort);
     static uint32_t nFlowletTimeout;
+    static std::vector<FlowletSwitchEvent> s_switchLog;
+    static bool s_enableSwitchLog;
 
     /* main function (returns outPort; mirrors LetflowRouting::RouteInput) */
     uint32_t RouteInput(Ptr<Packet> p, CustomHeader ch);

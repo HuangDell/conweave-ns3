@@ -85,6 +85,9 @@ uint32_t sflowlet_persist_windows = 3;              // consecutive low windows t
 double sflowlet_degrade_ratio = 0.85;               // below this fraction of nominal counts as low
 uint64_t sflowlet_backlog_thresh_bytes = 0;         // backlog gate (q_bytes > thresh)
 uint32_t sflowlet_weight_mode = 1;                  // 0=RANDOM,1=WEIGHTED,2=WCMP
+Time sflowlet_flowletTimeout = MicroSeconds(100);   // dedicated flowlet timeout (G3 sweep)
+uint32_t sflowlet_switch_log = 0;                   // 1=enable flowlet switch event log
+uint32_t sflowlet_ooo_log = 0;                      // 1=enable per-event OoO log
 
 /*------------------------ simulation variables -----------------------------*/
 uint64_t one_hop_delay = 1000;  // nanoseconds
@@ -113,6 +116,8 @@ FILE *voq_detail_output = NULL;
 FILE *uplink_output = NULL;
 FILE *conn_output = NULL;
 FILE *path_delay_output = NULL;  // Phase0: per-ToR-uplink path-delay sampler
+FILE *flowlet_switch_output = NULL;  // G3: flowlet path-switch events
+FILE *ooo_event_output = NULL;       // G3: per-event OoO log
 
 std::string data_rate, link_delay, topology_file, flow_file;
 std::string flow_input_file = "flow.txt";
@@ -126,6 +131,8 @@ std::string uplink_mon_file = "uplink.txt";
 std::string conn_mon_file = "conn.txt";
 std::string path_delay_mon_file = "path_delay.txt";  // Phase0
 std::string est_error_output_file = "est_error.txt";
+std::string flowlet_switch_output_file = "flowlet_switch.txt";  // G3
+std::string ooo_event_output_file = "ooo_events.txt";            // G3
 
 // CC params
 double alpha_resume_interval = 55, rp_timer = 300, ewma_gain = 1 / 16;
@@ -500,6 +507,37 @@ void conweave_history_print() {
 }
 
 /**
+ * @brief sflowlet end-of-sim summary + flowlet switch event dump (G3)
+ */
+void sflowlet_history_print() {
+    std::cout << "\n---------sflowlet History---------" << std::endl;
+    std::cout << "Flowlet timeouts: " << CapacityProportionalRouting::nFlowletTimeout
+              << "\nFlowlet timeout value: " << sflowlet_flowletTimeout
+              << "\nPath switches logged: " << CapacityProportionalRouting::s_switchLog.size()
+              << std::endl;
+
+    if (CapacityProportionalRouting::s_enableSwitchLog &&
+        !CapacityProportionalRouting::s_switchLog.empty()) {
+        flowlet_switch_output = fopen(flowlet_switch_output_file.c_str(), "w");
+        if (flowlet_switch_output) {
+            for (auto &ev : CapacityProportionalRouting::s_switchLog) {
+                fprintf(flowlet_switch_output, "%lu %u %lu %u %u %.0f %.0f\n", ev.time_ns,
+                        ev.switch_id, (unsigned long)ev.qpkey, ev.old_path, ev.new_path,
+                        ev.old_weight, ev.new_weight);
+            }
+            fclose(flowlet_switch_output);
+            flowlet_switch_output = NULL;
+        }
+    }
+
+    if (ooo_event_output) {
+        fclose(ooo_event_output);
+        ooo_event_output = NULL;
+        RdmaHw::s_oooEventLog = NULL;
+    }
+}
+
+/**
  * @brief When one RDMA is finished, so does (1) QP, (2) RxQP, (3) write it on file fct.txt.
  */
 void qp_finish(FILE *fout, Ptr<RdmaQueuePair> q) {
@@ -833,6 +871,31 @@ int main(int argc, char *argv[]) {
                 conf >> v;
                 sflowlet_est_time = Time(MicroSeconds(v));
                 std::cerr << "SFLOWLET_EST_TIME_US\t\t\t" << sflowlet_est_time << "\n";
+            } else if (key.compare("SFLOWLET_FLOWLET_TIMEOUT_US") == 0) {
+                uint32_t v;
+                conf >> v;
+                sflowlet_flowletTimeout = Time(MicroSeconds(v));
+                std::cerr << "SFLOWLET_FLOWLET_TIMEOUT_US\t\t" << sflowlet_flowletTimeout << "\n";
+            } else if (key.compare("SFLOWLET_SWITCH_LOG") == 0) {
+                uint32_t v;
+                conf >> v;
+                sflowlet_switch_log = v;
+                std::cerr << "SFLOWLET_SWITCH_LOG\t\t\t" << sflowlet_switch_log << "\n";
+            } else if (key.compare("SFLOWLET_OOO_LOG") == 0) {
+                uint32_t v;
+                conf >> v;
+                sflowlet_ooo_log = v;
+                std::cerr << "SFLOWLET_OOO_LOG\t\t\t" << sflowlet_ooo_log << "\n";
+            } else if (key.compare("FLOWLET_SWITCH_OUTPUT_FILE") == 0) {
+                std::string v;
+                conf >> v;
+                flowlet_switch_output_file = v;
+                std::cerr << "FLOWLET_SWITCH_OUTPUT_FILE\t\t" << flowlet_switch_output_file << "\n";
+            } else if (key.compare("OOO_EVENT_OUTPUT_FILE") == 0) {
+                std::string v;
+                conf >> v;
+                ooo_event_output_file = v;
+                std::cerr << "OOO_EVENT_OUTPUT_FILE\t\t\t" << ooo_event_output_file << "\n";
             } else if (key.compare("CONWEAVE_TX_EXPIRY_TIME") == 0) {
                 uint32_t v;
                 conf >> v;
@@ -1808,7 +1871,7 @@ int main(int argc, char *argv[]) {
                 }
                 if (lb_mode == 11) {
                     // sflowlet: capacity-proportional flowlet routing + online residual estimator.
-                    sw->m_mmu->m_cpRouting.SetConstants(letflow_agingTime, letflow_flowletTimeout);
+                    sw->m_mmu->m_cpRouting.SetConstants(letflow_agingTime, sflowlet_flowletTimeout);
                     sw->m_mmu->m_cpRouting.SetSwitchInfo(sw->m_isToR, sw->GetId());
                     sw->m_mmu->m_cpRouting.SetWeightMode(sflowlet_weight_mode);
                     sw->m_mmu->m_cpRouting.SetEstimator(&sw->m_mmu->m_residualEstimator);
@@ -1833,6 +1896,10 @@ int main(int argc, char *argv[]) {
         if (lb_mode == 9) {  // CONWEAVE
             Simulator::Schedule(Seconds(flowgen_stop_time + simulator_extra_time),
                                 conweave_history_print);
+        }
+        if (lb_mode == 11) {  // SFLOWLET
+            Simulator::Schedule(Seconds(flowgen_stop_time + simulator_extra_time),
+                                sflowlet_history_print);
         }
     }
 
@@ -1873,6 +1940,14 @@ int main(int argc, char *argv[]) {
     if (lb_mode == 9) {
         voq_output = fopen(voq_mon_file.c_str(), "w");                // specific to ConWeave
         voq_detail_output = fopen(voq_mon_detail_file.c_str(), "w");  // specific to ConWeave
+    }
+
+    if (lb_mode == 11) {  // sflowlet G3 logs
+        CapacityProportionalRouting::s_enableSwitchLog = (sflowlet_switch_log != 0);
+        if (sflowlet_ooo_log) {
+            ooo_event_output = fopen(ooo_event_output_file.c_str(), "w");
+            RdmaHw::s_oooEventLog = ooo_event_output;
+        }
     }
 
     uplink_output = fopen(uplink_mon_file.c_str(), "w");  // common

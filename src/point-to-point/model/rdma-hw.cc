@@ -7,6 +7,8 @@
 
 #include <climits>
 
+#include <cstdio>
+
 #include "cn-header.h"
 #include "flow-stat-tag.h"
 #include "ns3/boolean.h"
@@ -130,6 +132,8 @@ TypeId RdmaHw::GetTypeId(void) {
                           MakeTimeChecker());
     return tid;
 }
+
+FILE* RdmaHw::s_oooEventLog = nullptr;
 
 RdmaHw::RdmaHw() {
     cnp_total = 0;
@@ -349,7 +353,15 @@ int RdmaHw::ReceiveUdp(Ptr<Packet> p, CustomHeader &ch) {
             // XXX monitor CNP generation at sender
             cnp_total++;
             if (ecnbits) cnp_by_ecn++;
-            if (cnp_check) cnp_by_ooo++;
+            if (cnp_check) {
+                cnp_by_ooo++;
+                if (s_oooEventLog) {
+                    fprintf(s_oooEventLog, "%lu %u %u %u %u %u %u %u\n",
+                            Simulator::Now().GetNanoSeconds(), m_node->GetId(), ch.sip, ch.dip,
+                            ch.udp.sport, ch.udp.dport, ch.udp.seq,
+                            rxQp->ReceiverNextExpectedSeq);
+                }
+            }
             seqh.SetCnp();
         }
 

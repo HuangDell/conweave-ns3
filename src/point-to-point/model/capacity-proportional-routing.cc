@@ -22,6 +22,8 @@ NS_LOG_COMPONENT_DEFINE("CapacityProportionalRouting");
 namespace ns3 {
 
 uint32_t CapacityProportionalRouting::nFlowletTimeout = 0;
+std::vector<FlowletSwitchEvent> CapacityProportionalRouting::s_switchLog;
+bool CapacityProportionalRouting::s_enableSwitchLog = false;
 
 CapacityProportionalRouting::CapacityProportionalRouting() {
     m_estimator = nullptr;
@@ -93,8 +95,21 @@ uint32_t CapacityProportionalRouting::RouteInput(Ptr<Packet> p, CustomHeader ch)
                 }
 
                 /*---- Flowlet Timeout: pick a new path by capacity weight ----*/
+                uint32_t oldPath = flowlet->_PathId;
                 selectedPath = GetWeightedPath(dstToRId);
                 CapacityProportionalRouting::nFlowletTimeout++;
+
+                if (s_enableSwitchLog && selectedPath != oldPath) {
+                    double oldW = 0, newW = 0;
+                    if (m_estimator) {
+                        oldW = static_cast<double>(
+                            m_estimator->GetResidualCapacity(GetOutPortFromPath(oldPath, 0)));
+                        newW = static_cast<double>(
+                            m_estimator->GetResidualCapacity(GetOutPortFromPath(selectedPath, 0)));
+                    }
+                    s_switchLog.push_back({now.GetNanoSeconds(), m_switch_id, qpkey, oldPath,
+                                           selectedPath, oldW, newW});
+                }
 
                 flowlet->_activatedTime = now;
                 flowlet->_activeTime = now;

@@ -54,6 +54,11 @@ CONWEAVE_DEFAULT_VOQ_WAITING_TIME {cwh_default_voq_waiting_time}
 
 SFLOWLET_WEIGHT_MODE {sflowlet_weight_mode}
 SFLOWLET_EST_TIME_US {sflowlet_est_time_us}
+SFLOWLET_FLOWLET_TIMEOUT_US {sflowlet_flowlet_timeout_us}
+SFLOWLET_SWITCH_LOG {sflowlet_switch_log}
+SFLOWLET_OOO_LOG {sflowlet_ooo_log}
+FLOWLET_SWITCH_OUTPUT_FILE mix/output/{id}/{id}_out_flowlet_switch.txt
+OOO_EVENT_OUTPUT_FILE mix/output/{id}/{id}_out_ooo_events.txt
 
 ALPHA_RESUME_INTERVAL 1
 RATE_DECREASE_INTERVAL 4
@@ -206,6 +211,12 @@ def main():
                         default='weighted', help="sflowlet path weighting: random/weighted/wcmp (default: weighted)")
     parser.add_argument('--sflowlet_est_time_us', dest='sflowlet_est_time_us', action='store', type=int,
                         default=200, help="sflowlet residual-capacity estimator period in us (default: 200)")
+    parser.add_argument('--sflowlet_flowlet_timeout_us', dest='sflowlet_flowlet_timeout_us', action='store', type=int,
+                        default=100, help="sflowlet flowlet timeout in us (default: 100)")
+    parser.add_argument('--sflowlet_switch_log', dest='sflowlet_switch_log', action='store', type=int,
+                        default=0, help="enable flowlet switch event log for G3 (default: 0)")
+    parser.add_argument('--sflowlet_ooo_log', dest='sflowlet_ooo_log', action='store', type=int,
+                        default=0, help="enable per-event OoO log for G3 (default: 0)")
 
     # #### CONWEAVE PARAMETERS ####
     # parser.add_argument('--cwh_extra_reply_deadline', dest='cwh_extra_reply_deadline', action='store',
@@ -455,7 +466,10 @@ def main():
                                         kmax_map=kmax_map, kmin_map=kmin_map, pmax_map=pmax_map,
                                         link_degrade=link_degrade,
                                         sflowlet_weight_mode=sflowlet_weight_mode,
-                                        sflowlet_est_time_us=args.sflowlet_est_time_us)
+                                        sflowlet_est_time_us=args.sflowlet_est_time_us,
+                                        sflowlet_flowlet_timeout_us=args.sflowlet_flowlet_timeout_us,
+                                        sflowlet_switch_log=args.sflowlet_switch_log,
+                                        sflowlet_ooo_log=args.sflowlet_ooo_log)
     else:
         print("unknown cc:{}".format(args.cc))
 
