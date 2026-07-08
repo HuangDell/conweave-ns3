@@ -88,6 +88,7 @@ uint32_t sflowlet_weight_mode = 1;                  // 0=RANDOM,1=WEIGHTED,2=WCM
 Time sflowlet_flowletTimeout = MicroSeconds(100);   // dedicated flowlet timeout (G3 sweep)
 uint32_t sflowlet_switch_log = 0;                   // 1=enable flowlet switch event log
 uint32_t sflowlet_ooo_log = 0;                      // 1=enable per-event OoO log
+uint32_t v5_nsub = 1;                               // v5: split each flow into N sub-flows over distinct sports (per-path QP pool); 1=disabled
 
 /*------------------------ simulation variables -----------------------------*/
 uint64_t one_hop_delay = 1000;  // nanoseconds
@@ -243,19 +244,27 @@ void ScheduleFlowInputs(FILE *infile) {
         src = flow_input.src;
         dst = flow_input.dst;
 
-        // src port
-        sport = portNumber[src];  // get a new port number
-        portNumber[src] = portNumber[src] + 1;
-
-        // dst port
-        dport = dportNumber[dst];
-        dportNumber[dst] = dportNumber[dst] + 1;
-
         target_len = flow_input.maxPacketCount;  // this is actually not packet-count, but bytes
         if (target_len == 0) {
             target_len = 1;
         }
         assert(n.Get(src)->GetNodeType() == 0 && n.Get(dst)->GetNodeType() == 0);
+
+        // v5: split one flow into v5_nsub sub-flows over distinct sports (per-path QP pool).
+        // Each sub-flow gets its own sport/dport (=> independent PSN space => structural ordering).
+        // Bytes are split evenly; the remainder is folded into the last sub-flow. nsub=1 => original.
+        uint32_t nsub = (v5_nsub < 1) ? 1 : v5_nsub;
+        if (nsub > target_len) nsub = target_len;  // never create zero-byte sub-flows
+        uint32_t sub_base = target_len / nsub;
+        uint32_t sub_rem = target_len % nsub;
+        for (uint32_t si = 0; si < nsub; si++) {
+            // per sub-flow src/dst port
+            sport = portNumber[src];
+            portNumber[src] = portNumber[src] + 1;
+            dport = dportNumber[dst];
+            dportNumber[dst] = dportNumber[dst] + 1;
+
+            uint32_t sub_len = sub_base + ((si == nsub - 1) ? sub_rem : 0);
 
         /**
          * Turn on if you want to record all input streams into output file for logging.
@@ -293,7 +302,7 @@ void ScheduleFlowInputs(FILE *infile) {
         }
 
         RdmaClientHelper clientHelper(
-            pg, serverAddress[src], serverAddress[dst], sport, dport, target_len,
+            pg, serverAddress[src], serverAddress[dst], sport, dport, sub_len,
             has_win ? (global_t == 1 ? maxBdp : pairBdp[n.Get(src)][n.Get(dst)]) : 0,
             global_t == 1 ? maxRtt : pairRtt[n.Get(src)][n.Get(dst)]);
         clientHelper.SetAttribute("StatFlowID", IntegerValue(flow_input.idx));
@@ -301,6 +310,7 @@ void ScheduleFlowInputs(FILE *infile) {
         ApplicationContainer appCon = clientHelper.Install(n.Get(src));  // SRC
         appCon.Start(Seconds(Time(0)));
         appCon.Stop(Seconds(100.0));
+        }  // end of v5 sub-flow loop
 
         flow_input.idx++;
         ReadFlowInput();
@@ -886,6 +896,11 @@ int main(int argc, char *argv[]) {
                 conf >> v;
                 sflowlet_ooo_log = v;
                 std::cerr << "SFLOWLET_OOO_LOG\t\t\t" << sflowlet_ooo_log << "\n";
+            } else if (key.compare("V5_NSUB") == 0) {
+                uint32_t v;
+                conf >> v;
+                v5_nsub = (v < 1) ? 1 : v;
+                std::cerr << "V5_NSUB\t\t\t\t" << v5_nsub << "\n";
             } else if (key.compare("FLOWLET_SWITCH_OUTPUT_FILE") == 0) {
                 std::string v;
                 conf >> v;

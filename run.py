@@ -57,6 +57,7 @@ SFLOWLET_EST_TIME_US {sflowlet_est_time_us}
 SFLOWLET_FLOWLET_TIMEOUT_US {sflowlet_flowlet_timeout_us}
 SFLOWLET_SWITCH_LOG {sflowlet_switch_log}
 SFLOWLET_OOO_LOG {sflowlet_ooo_log}
+V5_NSUB {v5_nsub}
 FLOWLET_SWITCH_OUTPUT_FILE mix/output/{id}/{id}_out_flowlet_switch.txt
 OOO_EVENT_OUTPUT_FILE mix/output/{id}/{id}_out_ooo_events.txt
 
@@ -215,8 +216,9 @@ def main():
                         default=100, help="sflowlet flowlet timeout in us (default: 100)")
     parser.add_argument('--sflowlet_switch_log', dest='sflowlet_switch_log', action='store', type=int,
                         default=0, help="enable flowlet switch event log for G3 (default: 0)")
-    parser.add_argument('--sflowlet_ooo_log', dest='sflowlet_ooo_log', action='store', type=int,
-                        default=0, help="enable per-event OoO log for G3 (default: 0)")
+    parser.add_argument('--sflowlet_ooo_log', dest='sflowlet_ooo_log', action='store', type=int,                        default=0, help="enable per-event OoO log for G3 (default: 0)")
+    parser.add_argument('--v5_nsub', dest='v5_nsub', action='store', type=int,
+                        default=1, help="v5: split each flow into N sub-flows over distinct sports (per-path QP pool); 1 = disabled (default: 1)")
 
     # #### CONWEAVE PARAMETERS ####
     # parser.add_argument('--cwh_extra_reply_deadline', dest='cwh_extra_reply_deadline', action='store',
@@ -469,7 +471,8 @@ def main():
                                         sflowlet_est_time_us=args.sflowlet_est_time_us,
                                         sflowlet_flowlet_timeout_us=args.sflowlet_flowlet_timeout_us,
                                         sflowlet_switch_log=args.sflowlet_switch_log,
-                                        sflowlet_ooo_log=args.sflowlet_ooo_log)
+                                        sflowlet_ooo_log=args.sflowlet_ooo_log,
+                                        v5_nsub=args.v5_nsub)
     else:
         print("unknown cc:{}".format(args.cc))
 
