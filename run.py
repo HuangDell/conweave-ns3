@@ -52,6 +52,8 @@ CONWEAVE_PATH_PAUSE_TIME {cwh_path_pause_time}
 CONWEAVE_EXTRA_VOQ_FLUSH_TIME {cwh_extra_voq_flush_time}
 CONWEAVE_DEFAULT_VOQ_WAITING_TIME {cwh_default_voq_waiting_time}
 
+LETFLOW_FLOWLET_TIMEOUT_US {letflow_flowlet_timeout_us}
+
 SFLOWLET_WEIGHT_MODE {sflowlet_weight_mode}
 SFLOWLET_EST_TIME_US {sflowlet_est_time_us}
 SFLOWLET_FLOWLET_TIMEOUT_US {sflowlet_flowlet_timeout_us}
@@ -208,6 +210,9 @@ def main():
                         default=1.0, help="flap 'recovered' fraction (default: 1.0)")
 
     # #### SFLOWLET (v4) PARAMETERS ####
+    parser.add_argument('--letflow_flowlet_timeout_us', dest='letflow_flowlet_timeout_us',
+                        action='store', type=int, default=100,
+                        help="LetFlow flowlet timeout in us (default: 100)")
     parser.add_argument('--sflowlet_weight_mode', dest='sflowlet_weight_mode', action='store',
                         default='weighted', help="sflowlet path weighting: random/weighted/wcmp (default: weighted)")
     parser.add_argument('--sflowlet_est_time_us', dest='sflowlet_est_time_us', action='store', type=int,
@@ -467,6 +472,7 @@ def main():
                                         fast_react=fast_react, mi=mi, int_multi=int_multi, ewma_gain=ewma_gain,
                                         kmax_map=kmax_map, kmin_map=kmin_map, pmax_map=pmax_map,
                                         link_degrade=link_degrade,
+                                        letflow_flowlet_timeout_us=args.letflow_flowlet_timeout_us,
                                         sflowlet_weight_mode=sflowlet_weight_mode,
                                         sflowlet_est_time_us=args.sflowlet_est_time_us,
                                         sflowlet_flowlet_timeout_us=args.sflowlet_flowlet_timeout_us,

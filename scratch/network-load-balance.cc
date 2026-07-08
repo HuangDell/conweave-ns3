@@ -27,6 +27,7 @@
 #include <ns3/switch-node.h>
 #include <time.h>
 
+#include <algorithm>
 #include <fstream>
 #include <iostream>
 #include <tuple>
@@ -215,6 +216,32 @@ struct FlowInput {
 };
 FlowInput flow_input = {0};  // global variable
 uint32_t flow_num;
+uint64_t target_completion_count = 0;
+
+/**
+ * v5 splits one app flow into multiple QPs. The original stop condition counts
+ * completed QPs, so keep the original target unless splitting is enabled.
+ */
+uint64_t GetTargetCompletionCount() {
+    if (v5_nsub <= 1) {
+        return flow_num;
+    }
+
+    std::streampos first_flow_pos = flowf.tellg();
+    uint64_t target = 0;
+    for (uint32_t i = 0; i < flow_num; i++) {
+        uint32_t src, dst, pg, target_len;
+        double start_time;
+        flowf >> src >> dst >> pg >> target_len >> start_time;
+        if (target_len == 0) {
+            target_len = 1;
+        }
+        target += std::min<uint32_t>(v5_nsub, target_len);
+    }
+    flowf.clear();
+    flowf.seekg(first_flow_pos);
+    return target;
+}
 
 /**
  * Read flow input from file "flowf"
@@ -646,7 +673,7 @@ void monitor_buffer(FILE *qlen_output, NodeContainer *n) {
  * This function allows to finish simulation quickly when all messages are sent.
  */
 void stop_simulation_middle() {
-    uint32_t target_flow_num = flow_num - 0;  // can be lower than flownum
+    uint64_t target_flow_num = target_completion_count;  // can be lower than flownum
     if (Settings::cnt_finished_flows >= target_flow_num) {
         std::cout << "\n*** Simulator is enforced to be finished, finished so far: "
                   << Settings::cnt_finished_flows << "/ total: " << target_flow_num
@@ -939,6 +966,11 @@ int main(int argc, char *argv[]) {
                 conweave_defaultVOQWaitingTime = Time(MicroSeconds(v));
                 std::cerr << "CONWEAVE_DEFAULT_VOQ_WAITING_TIME\t\t\t"
                           << conweave_defaultVOQWaitingTime << "\n";
+            } else if (key.compare("LETFLOW_FLOWLET_TIMEOUT_US") == 0) {
+                uint32_t v;
+                conf >> v;
+                letflow_flowletTimeout = Time(MicroSeconds(v));
+                std::cerr << "LETFLOW_FLOWLET_TIMEOUT_US\t\t" << letflow_flowletTimeout << "\n";
             } else if (key.compare("ENABLE_PFC") == 0) {
                 uint32_t v;
                 conf >> v;
@@ -1305,6 +1337,10 @@ int main(int argc, char *argv[]) {
     uint32_t node_num, switch_num, link_num;
     topof >> node_num >> switch_num >> link_num;
     flowf >> flow_num;
+    target_completion_count = GetTargetCompletionCount();
+    if (v5_nsub > 1) {
+        std::cerr << "V5_TARGET_COMPLETION_COUNT\t\t" << target_completion_count << "\n";
+    }
 
     /*-------Parameter of Settings-------*/
     Settings::node_num = node_num;
