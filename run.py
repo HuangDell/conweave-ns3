@@ -60,8 +60,15 @@ SFLOWLET_FLOWLET_TIMEOUT_US {sflowlet_flowlet_timeout_us}
 SFLOWLET_SWITCH_LOG {sflowlet_switch_log}
 SFLOWLET_OOO_LOG {sflowlet_ooo_log}
 V5_NSUB {v5_nsub}
+V5_CHUNK_BYTES {v5_chunk_bytes}
+V5_SIZE_GATE_BYTES {v5_size_gate_bytes}
+V5_ORACLE_POLICY {v5_oracle_policy}
+V5_ORACLE_BAD_SPINE {v5_oracle_bad_spine}
+V5_CHUNK_COMMIT_RATE_GBPS {v5_chunk_commit_rate_gbps}
+V5_CHUNK_LOG {v5_chunk_log}
 FLOWLET_SWITCH_OUTPUT_FILE mix/output/{id}/{id}_out_flowlet_switch.txt
 OOO_EVENT_OUTPUT_FILE mix/output/{id}/{id}_out_ooo_events.txt
+V5_CHUNK_OUTPUT_FILE mix/output/{id}/{id}_out_v5_chunk.txt
 
 ALPHA_RESUME_INTERVAL 1
 RATE_DECREASE_INTERVAL 4
@@ -224,6 +231,18 @@ def main():
     parser.add_argument('--sflowlet_ooo_log', dest='sflowlet_ooo_log', action='store', type=int,                        default=0, help="enable per-event OoO log for G3 (default: 0)")
     parser.add_argument('--v5_nsub', dest='v5_nsub', action='store', type=int,
                         default=1, help="v5: split each flow into N sub-flows over distinct sports (per-path QP pool); 1 = disabled (default: 1)")
+    parser.add_argument('--v5_chunk_bytes', dest='v5_chunk_bytes', action='store', type=int,
+                        default=0, help="v5 G-new-a: chunk/sub-WQE bytes; 0 disables oracle chunk mode (default: 0)")
+    parser.add_argument('--v5_size_gate_bytes', dest='v5_size_gate_bytes', action='store', type=int,
+                        default=104000, help="v5 G-new-a: flows smaller than this are not split (default: 104000)")
+    parser.add_argument('--v5_oracle_policy', dest='v5_oracle_policy', action='store',
+                        default='uniform', help="v5 G-new-a oracle policy: uniform/proportional/avoid (default: uniform)")
+    parser.add_argument('--v5_oracle_bad_spine', dest='v5_oracle_bad_spine', action='store', type=int,
+                        default=0, help="v5 G-new-a: degraded spine node id for local bad-lane oracle (default: 0)")
+    parser.add_argument('--v5_chunk_commit_rate_gbps', dest='v5_chunk_commit_rate_gbps', action='store', type=float,
+                        default=100.0, help="v5 G-new-a: host chunk commit rate in Gbps (default: 100)")
+    parser.add_argument('--v5_chunk_log', dest='v5_chunk_log', action='store', type=int,
+                        default=0, help="v5 G-new-a: enable per-chunk assignment log (default: 0)")
 
     # #### CONWEAVE PARAMETERS ####
     # parser.add_argument('--cwh_extra_reply_deadline', dest='cwh_extra_reply_deadline', action='store',
@@ -283,6 +302,16 @@ def main():
         raise Exception("CONFIG ERROR : unknown --sflowlet_weight_mode {}".format(
             args.sflowlet_weight_mode))
     sflowlet_weight_mode = sflowlet_weight_modes[args.sflowlet_weight_mode]
+    v5_oracle_policies = {"uniform", "proportional", "avoid"}
+    if args.v5_oracle_policy not in v5_oracle_policies:
+        raise Exception("CONFIG ERROR : unknown --v5_oracle_policy {}".format(
+            args.v5_oracle_policy))
+    if args.v5_chunk_bytes < 0:
+        raise Exception("CONFIG ERROR : --v5_chunk_bytes must be >= 0")
+    if args.v5_size_gate_bytes < 0:
+        raise Exception("CONFIG ERROR : --v5_size_gate_bytes must be >= 0")
+    if args.v5_chunk_commit_rate_gbps <= 0:
+        raise Exception("CONFIG ERROR : --v5_chunk_commit_rate_gbps must be > 0")
 
     # get over-subscription ratio from topoogy name
 
@@ -478,7 +507,13 @@ def main():
                                         sflowlet_flowlet_timeout_us=args.sflowlet_flowlet_timeout_us,
                                         sflowlet_switch_log=args.sflowlet_switch_log,
                                         sflowlet_ooo_log=args.sflowlet_ooo_log,
-                                        v5_nsub=args.v5_nsub)
+                                        v5_nsub=args.v5_nsub,
+                                        v5_chunk_bytes=args.v5_chunk_bytes,
+                                        v5_size_gate_bytes=args.v5_size_gate_bytes,
+                                        v5_oracle_policy=args.v5_oracle_policy,
+                                        v5_oracle_bad_spine=args.v5_oracle_bad_spine,
+                                        v5_chunk_commit_rate_gbps=args.v5_chunk_commit_rate_gbps,
+                                        v5_chunk_log=args.v5_chunk_log)
     else:
         print("unknown cc:{}".format(args.cc))
 

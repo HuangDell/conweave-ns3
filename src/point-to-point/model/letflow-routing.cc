@@ -80,6 +80,7 @@ void LetflowTag::Print(std::ostream& os) const {
 
 /*----- Letflow-Route ------*/
 uint32_t LetflowRouting::nFlowletTimeout = 0;
+std::unordered_map<uint64_t, uint32_t> LetflowRouting::s_pinnedLane;
 LetflowRouting::LetflowRouting() {
     m_isToR = false;
     m_switch_id = (uint32_t)-1;
@@ -92,6 +93,14 @@ LetflowRouting::LetflowRouting() {
 // it defines flowlet's 64bit key (order does not matter)
 uint64_t LetflowRouting::GetQpKey(uint32_t dip, uint16_t sport, uint16_t dport, uint16_t pg) {
     return ((uint64_t)dip << 32) | ((uint64_t)sport << 16) | (uint64_t)pg | (uint64_t)dport;
+}
+
+void LetflowRouting::RegisterPinnedLane(uint64_t qpkey, uint32_t lane) {
+    s_pinnedLane[qpkey] = lane;
+}
+
+void LetflowRouting::ClearPinnedLanes() {
+    s_pinnedLane.clear();
 }
 
 TypeId LetflowRouting::GetTypeId(void) {
@@ -167,7 +176,7 @@ uint32_t LetflowRouting::RouteInput(Ptr<Packet> p, CustomHeader ch) {
 
                 /*---- Flowlet Timeout ----*/
                 // NS_LOG_FUNCTION("Flowlet expires, calculate the new port");
-                selectedPath = GetRandomPath(dstToRId);
+                selectedPath = GetPinnedPath(dstToRId, qpkey);
                 LetflowRouting::nFlowletTimeout++;
 
                 // update flowlet info
@@ -189,7 +198,7 @@ uint32_t LetflowRouting::RouteInput(Ptr<Packet> p, CustomHeader ch) {
                 return GetOutPortFromPath(selectedPath, letflowTag.GetHopCount());
             }
             // 2) flowlet does not exist, e.g., first packet of flow
-            selectedPath = GetRandomPath(dstToRId);
+            selectedPath = GetPinnedPath(dstToRId, qpkey);
             struct Flowlet* newFlowlet = new Flowlet;
             newFlowlet->_activeTime = now;
             newFlowlet->_activatedTime = now;
@@ -245,6 +254,22 @@ uint32_t LetflowRouting::GetRandomPath(uint32_t dstToRId) {
 
     auto innerPathItr = pathItr->second.begin();
     std::advance(innerPathItr, rand() % pathItr->second.size());
+    return *innerPathItr;
+}
+
+uint32_t LetflowRouting::GetPinnedPath(uint32_t dstToRId, uint64_t qpkey) {
+    auto pinItr = s_pinnedLane.find(qpkey);
+    if (pinItr == s_pinnedLane.end()) {
+        return GetRandomPath(dstToRId);
+    }
+
+    auto pathItr = m_letflowRoutingTable.find(dstToRId);
+    assert(pathItr != m_letflowRoutingTable.end());
+    NS_ASSERT_MSG(!pathItr->second.empty(), "Cannot pin into an empty path set");
+
+    uint32_t lane = pinItr->second % pathItr->second.size();
+    auto innerPathItr = pathItr->second.begin();
+    std::advance(innerPathItr, lane);
     return *innerPathItr;
 }
 

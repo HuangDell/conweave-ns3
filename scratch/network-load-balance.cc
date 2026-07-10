@@ -30,6 +30,7 @@
 #include <algorithm>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <tuple>
 #include <unordered_map>
 #include <vector>
@@ -90,6 +91,12 @@ Time sflowlet_flowletTimeout = MicroSeconds(100);   // dedicated flowlet timeout
 uint32_t sflowlet_switch_log = 0;                   // 1=enable flowlet switch event log
 uint32_t sflowlet_ooo_log = 0;                      // 1=enable per-event OoO log
 uint32_t v5_nsub = 1;                               // v5: split each flow into N sub-flows over distinct sports (per-path QP pool); 1=disabled
+uint32_t v5_chunk_bytes = 0;                        // v5 G-new-a: 0 disables oracle chunk mode
+uint32_t v5_size_gate_bytes = 104000;               // v5: flows smaller than this are not split
+std::string v5_oracle_policy = "uniform";           // uniform / proportional / avoid
+uint32_t v5_oracle_bad_spine = 0;                   // degraded spine id for local-uplink oracle
+double v5_chunk_commit_rate_gbps = 100.0;           // host-side chunk commit rate model
+uint32_t v5_chunk_log = 0;                          // 1=emit per-chunk assignment log
 
 /*------------------------ simulation variables -----------------------------*/
 uint64_t one_hop_delay = 1000;  // nanoseconds
@@ -120,6 +127,7 @@ FILE *conn_output = NULL;
 FILE *path_delay_output = NULL;  // Phase0: per-ToR-uplink path-delay sampler
 FILE *flowlet_switch_output = NULL;  // G3: flowlet path-switch events
 FILE *ooo_event_output = NULL;       // G3: per-event OoO log
+FILE *v5_chunk_output = NULL;        // v5 G-new-a: per-chunk assignment log
 
 std::string data_rate, link_delay, topology_file, flow_file;
 std::string flow_input_file = "flow.txt";
@@ -135,6 +143,7 @@ std::string path_delay_mon_file = "path_delay.txt";  // Phase0
 std::string est_error_output_file = "est_error.txt";
 std::string flowlet_switch_output_file = "flowlet_switch.txt";  // G3
 std::string ooo_event_output_file = "ooo_events.txt";            // G3
+std::string v5_chunk_output_file = "v5_chunk.txt";               // v5 G-new-a
 
 // CC params
 double alpha_resume_interval = 55, rp_timer = 300, ewma_gain = 1 / 16;
@@ -207,6 +216,7 @@ uint32_t flow_id = 0;
 std::unordered_map<uint32_t, uint16_t> portNumber;
 std::unordered_map<uint32_t, uint16_t> dportNumber;
 uint16_t *port_per_host;
+std::map<uint64_t, std::vector<uint64_t>> v5_oracle_lane_bytes;
 
 // Scheduling input flows from flow.txt
 struct FlowInput {
@@ -217,6 +227,21 @@ struct FlowInput {
 FlowInput flow_input = {0};  // global variable
 uint32_t flow_num;
 uint64_t target_completion_count = 0;
+
+bool V5ChunkModeEnabled() {
+    return v5_chunk_bytes > 0 && v5_nsub > 1;
+}
+
+uint64_t V5ChunkCount(uint32_t bytes) {
+    if (bytes == 0) bytes = 1;
+    if (!V5ChunkModeEnabled()) {
+        return std::min<uint32_t>(v5_nsub, bytes);
+    }
+    if (v5_size_gate_bytes > 0 && bytes < v5_size_gate_bytes) {
+        return 1;
+    }
+    return (bytes + v5_chunk_bytes - 1) / v5_chunk_bytes;
+}
 
 /**
  * v5 splits one app flow into multiple QPs. The original stop condition counts
@@ -236,12 +261,156 @@ uint64_t GetTargetCompletionCount() {
         if (target_len == 0) {
             target_len = 1;
         }
-        target += std::min<uint32_t>(v5_nsub, target_len);
+        target += V5ChunkCount(target_len);
     }
     flowf.clear();
     flowf.seekg(first_flow_pos);
     return target;
 }
+
+uint64_t V5LaneCounterKey(uint32_t srcTor, uint32_t dstTor, bool postDegrade) {
+    return ((uint64_t)srcTor << 33) | ((uint64_t)dstTor << 1) | (postDegrade ? 1 : 0);
+}
+
+bool V5GetBadLane(uint32_t src, uint32_t dst, uint32_t &badLane, double &badFrac,
+                  double &degradeTime) {
+    badLane = (uint32_t)-1;
+    badFrac = 1.0;
+    degradeTime = std::numeric_limits<double>::max();
+    if (v5_oracle_bad_spine >= n.GetN()) {
+        return false;
+    }
+
+    uint32_t srcToR = Settings::hostIp2SwitchId[serverAddress[src].Get()];
+    uint32_t dstToR = Settings::hostIp2SwitchId[serverAddress[dst].Get()];
+    bool localDegrade = false;
+    for (auto &ev : link_degrade_events) {
+        uint32_t A = std::get<1>(ev);
+        uint32_t B = std::get<2>(ev);
+        if ((A == srcToR && B == v5_oracle_bad_spine) ||
+            (B == srcToR && A == v5_oracle_bad_spine)) {
+            localDegrade = true;
+            badFrac = std::get<3>(ev);
+            degradeTime = flowgen_start_time + (double)std::get<0>(ev) / 1000000.0;
+            break;
+        }
+    }
+    if (!localDegrade) {
+        return false;
+    }
+
+    Ptr<Node> srcNode = n.Get(srcToR);
+    Ptr<Node> spineNode = n.Get(v5_oracle_bad_spine);
+    if (nbr2if.find(srcNode) == nbr2if.end() || nbr2if[srcNode].find(spineNode) == nbr2if[srcNode].end()) {
+        return false;
+    }
+    uint32_t badOutPort = nbr2if[srcNode][spineNode].idx;
+
+    auto swItr = idxNodeToR.find(srcToR);
+    if (swItr == idxNodeToR.end()) {
+        return false;
+    }
+    auto pathItr = swItr->second->m_mmu->m_letflowRouting.m_letflowRoutingTable.find(dstToR);
+    if (pathItr == swItr->second->m_mmu->m_letflowRouting.m_letflowRoutingTable.end()) {
+        return false;
+    }
+
+    uint32_t lane = 0;
+    for (auto pathId : pathItr->second) {
+        if (LetflowRouting::GetOutPortFromPath(pathId, 0) == badOutPort) {
+            badLane = lane;
+            return true;
+        }
+        lane++;
+    }
+    return false;
+}
+
+std::string V5ActivePolicy(bool hasBadLane, double chunkStartTime, double degradeTime) {
+    if (!hasBadLane || chunkStartTime < degradeTime) {
+        return "uniform";
+    }
+    return v5_oracle_policy;
+}
+
+uint32_t V5SelectLane(uint32_t src, uint32_t dst, uint32_t chunkSize, const std::string &policy,
+                      bool hasBadLane, uint32_t badLane, double badFrac,
+                      double chunkStartTime, double degradeTime) {
+    uint32_t srcToR = Settings::hostIp2SwitchId[serverAddress[src].Get()];
+    uint32_t dstToR = Settings::hostIp2SwitchId[serverAddress[dst].Get()];
+    std::vector<double> weights(v5_nsub, 1.0);
+    if (hasBadLane && badLane < v5_nsub) {
+        if (policy == "proportional") {
+            weights[badLane] = std::max(0.0, badFrac);
+        } else if (policy == "avoid") {
+            weights[badLane] = 0.0;
+        }
+    }
+
+    bool postDegrade = hasBadLane && chunkStartTime >= degradeTime && policy != "uniform";
+    uint64_t key = V5LaneCounterKey(srcToR, dstToR, postDegrade);
+    auto &assigned = v5_oracle_lane_bytes[key];
+    if (assigned.size() != v5_nsub) {
+        assigned.assign(v5_nsub, 0);
+    }
+
+    uint32_t bestLane = 0;
+    double bestScore = std::numeric_limits<double>::max();
+    double bestWeight = -1.0;
+    for (uint32_t lane = 0; lane < v5_nsub; lane++) {
+        if (weights[lane] <= 0.0) {
+            continue;
+        }
+        double score = (double)assigned[lane] / weights[lane];
+        if (score < bestScore || (score == bestScore && weights[lane] > bestWeight)) {
+            bestScore = score;
+            bestWeight = weights[lane];
+            bestLane = lane;
+        }
+    }
+    assigned[bestLane] += chunkSize;
+    return bestLane;
+}
+
+void InstallRdmaSubflow(uint32_t pg, uint32_t src, uint32_t dst, uint32_t bytes,
+                        double startTime, uint32_t chunkId, bool pinLane, uint32_t lane,
+                        const std::string &policy, bool isBadLane) {
+    uint32_t sport = portNumber[src];
+    portNumber[src] = portNumber[src] + 1;
+    uint32_t dport = dportNumber[dst];
+    dportNumber[dst] = dportNumber[dst] + 1;
+
+    if (pinLane) {
+        uint64_t qpkey = LetflowRouting::GetQpKey(serverAddress[dst].Get(), sport, dport, pg);
+        LetflowRouting::RegisterPinnedLane(qpkey, lane);
+    }
+
+    if (v5_chunk_output) {
+        uint64_t startNs = (uint64_t)(startTime * 1000000000.0);
+        fprintf(v5_chunk_output, "%u %u %u %u %u %u %u %lu %u %s %u\n", flow_input.idx,
+                chunkId, src, dst, sport, dport, bytes, startNs, pinLane ? lane : (uint32_t)-1,
+                policy.c_str(), isBadLane ? 1 : 0);
+        fflush(v5_chunk_output);
+    }
+
+    if (pairRtt.find(n.Get(src)) == pairRtt.end() ||
+        pairRtt[n.Get(src)].find(n.Get(dst)) == pairRtt[n.Get(src)].end()) {
+        std::cerr << "pairRtt src: " << src << " -> dst: " << dst
+                  << " ==> cannot be found from database" << std::endl;
+        assert(false);
+    }
+
+    RdmaClientHelper clientHelper(
+        pg, serverAddress[src], serverAddress[dst], sport, dport, bytes,
+        has_win ? (global_t == 1 ? maxBdp : pairBdp[n.Get(src)][n.Get(dst)]) : 0,
+        global_t == 1 ? maxRtt : pairRtt[n.Get(src)][n.Get(dst)]);
+    clientHelper.SetAttribute("StatFlowID", IntegerValue(flow_input.idx));
+
+    ApplicationContainer appCon = clientHelper.Install(n.Get(src));
+    appCon.Start(Seconds(startTime));
+    appCon.Stop(Seconds(100.0));
+}
+
 
 /**
  * Read flow input from file "flowf"
@@ -266,7 +435,7 @@ void ReadFlowInput() {
 void ScheduleFlowInputs(FILE *infile) {
     NS_LOG_DEBUG("ScheduleFlowInputs at " << Simulator::Now());
     while (flow_input.idx < flow_num && Seconds(flow_input.start_time) == Simulator::Now()) {
-        uint32_t pg, src, dst, sport, dport, maxPacketCount, target_len;
+        uint32_t pg, src, dst, target_len;
         pg = flow_input.pg;
         src = flow_input.src;
         dst = flow_input.dst;
@@ -277,67 +446,45 @@ void ScheduleFlowInputs(FILE *infile) {
         }
         assert(n.Get(src)->GetNodeType() == 0 && n.Get(dst)->GetNodeType() == 0);
 
-        // v5: split one flow into v5_nsub sub-flows over distinct sports (per-path QP pool).
-        // Each sub-flow gets its own sport/dport (=> independent PSN space => structural ordering).
-        // Bytes are split evenly; the remainder is folded into the last sub-flow. nsub=1 => original.
-        uint32_t nsub = (v5_nsub < 1) ? 1 : v5_nsub;
-        if (nsub > target_len) nsub = target_len;  // never create zero-byte sub-flows
-        uint32_t sub_base = target_len / nsub;
-        uint32_t sub_rem = target_len % nsub;
-        for (uint32_t si = 0; si < nsub; si++) {
-            // per sub-flow src/dst port
-            sport = portNumber[src];
-            portNumber[src] = portNumber[src] + 1;
-            dport = dportNumber[dst];
-            dportNumber[dst] = dportNumber[dst] + 1;
+        if (V5ChunkModeEnabled()) {
+            uint32_t badLane;
+            double badFrac;
+            double degradeTime;
+            bool hasBadLane = V5GetBadLane(src, dst, badLane, badFrac, degradeTime);
+            double bytesPerSecond =
+                (v5_chunk_commit_rate_gbps > 0.0)
+                    ? (v5_chunk_commit_rate_gbps * 1000000000.0 / 8.0)
+                    : std::numeric_limits<double>::max();
 
-            uint32_t sub_len = sub_base + ((si == nsub - 1) ? sub_rem : 0);
-
-        /**
-         * Turn on if you want to record all input streams into output file for logging.
-         * But, the input stream can be found in config. We do not recommend to do this
-         * as it consumes storage resource, redundantly.
-         */
-        if (0) {  // logging input streams to "XXXX_out_in.txt"
-            /************************
-             * record flow's 4-tuple
-             ************************/
-            fprintf(infile, "%u %u %u %u %u %lu\n", src, dst, sport, dport, target_len,
-                    (uint64_t)(flow_input.start_time * (uint64_t)1000000000));
-            fflush(infile);
-
-            /***********    FCT Tracking    **************/
-            UdpServerHelper server0(dport);
-            server0.SetAttribute("FlowSize", UintegerValue(target_len));
-            server0.SetAttribute("irn", BooleanValue(enable_irn));
-            server0.SetAttribute("StatHostSrc", UintegerValue(src));
-            server0.SetAttribute("StatHostDst", UintegerValue(dst));
-            server0.SetAttribute("StatRxLen", UintegerValue(target_len));
-            server0.SetAttribute("StatFlowID", UintegerValue(flow_input.idx));
-            server0.SetAttribute("Port", UintegerValue(dport));
-
-            ApplicationContainer apps0s = server0.Install(n.Get(dst));  // DST
-            apps0s.Start(Seconds(Time(0)));
-            apps0s.Stop(Seconds(100.0));
-        }  // end of logging input streams
-
-        if (pairRtt.find(n.Get(src)) == pairRtt.end() ||
-            pairRtt[n.Get(src)].find(n.Get(dst)) == pairRtt[n.Get(src)].end()) {
-            std::cerr << "pairRtt src: " << src << " -> dst: " << dst
-                      << " ==> cannot be found from database" << std::endl;
-            assert(false);
+            uint32_t remaining = target_len;
+            uint32_t chunkId = 0;
+            uint64_t committedBytes = 0;
+            bool noSplit = (v5_size_gate_bytes > 0 && target_len < v5_size_gate_bytes);
+            while (remaining > 0) {
+                uint32_t chunkLen = noSplit ? remaining : std::min<uint32_t>(remaining, v5_chunk_bytes);
+                double chunkStart = flow_input.start_time + (double)committedBytes / bytesPerSecond;
+                std::string policy = V5ActivePolicy(hasBadLane, chunkStart, degradeTime);
+                uint32_t lane = V5SelectLane(src, dst, chunkLen, policy, hasBadLane, badLane,
+                                             badFrac, chunkStart, degradeTime);
+                bool isBadLane = hasBadLane && lane == badLane;
+                InstallRdmaSubflow(pg, src, dst, chunkLen, chunkStart, chunkId, true, lane, policy,
+                                   isBadLane);
+                remaining -= chunkLen;
+                committedBytes += chunkLen;
+                chunkId++;
+            }
+        } else {
+            // v5 G-new-0 legacy split: N equal QPs over distinct sports. nsub=1 is original.
+            uint32_t nsub = (v5_nsub < 1) ? 1 : v5_nsub;
+            if (nsub > target_len) nsub = target_len;  // never create zero-byte sub-flows
+            uint32_t sub_base = target_len / nsub;
+            uint32_t sub_rem = target_len % nsub;
+            for (uint32_t si = 0; si < nsub; si++) {
+                uint32_t sub_len = sub_base + ((si == nsub - 1) ? sub_rem : 0);
+                InstallRdmaSubflow(pg, src, dst, sub_len, flow_input.start_time, si, false, 0,
+                                   "legacy", false);
+            }
         }
-
-        RdmaClientHelper clientHelper(
-            pg, serverAddress[src], serverAddress[dst], sport, dport, sub_len,
-            has_win ? (global_t == 1 ? maxBdp : pairBdp[n.Get(src)][n.Get(dst)]) : 0,
-            global_t == 1 ? maxRtt : pairRtt[n.Get(src)][n.Get(dst)]);
-        clientHelper.SetAttribute("StatFlowID", IntegerValue(flow_input.idx));
-
-        ApplicationContainer appCon = clientHelper.Install(n.Get(src));  // SRC
-        appCon.Start(Seconds(Time(0)));
-        appCon.Stop(Seconds(100.0));
-        }  // end of v5 sub-flow loop
 
         flow_input.idx++;
         ReadFlowInput();
@@ -477,6 +624,10 @@ void letflow_history_print() {
     std::cout << "\n------------Letflow History---------------" << std::endl;
     std::cout << "Number of flowlet's timeout:" << LetflowRouting::nFlowletTimeout
               << "\nLetflow's timeout: " << letflow_flowletTimeout << std::endl;
+    if (v5_chunk_output) {
+        fclose(v5_chunk_output);
+        v5_chunk_output = NULL;
+    }
 }
 
 /**
@@ -571,6 +722,10 @@ void sflowlet_history_print() {
         fclose(ooo_event_output);
         ooo_event_output = NULL;
         RdmaHw::s_oooEventLog = NULL;
+    }
+    if (v5_chunk_output) {
+        fclose(v5_chunk_output);
+        v5_chunk_output = NULL;
     }
 }
 
@@ -928,6 +1083,36 @@ int main(int argc, char *argv[]) {
                 conf >> v;
                 v5_nsub = (v < 1) ? 1 : v;
                 std::cerr << "V5_NSUB\t\t\t\t" << v5_nsub << "\n";
+            } else if (key.compare("V5_CHUNK_BYTES") == 0) {
+                uint32_t v;
+                conf >> v;
+                v5_chunk_bytes = v;
+                std::cerr << "V5_CHUNK_BYTES\t\t\t" << v5_chunk_bytes << "\n";
+            } else if (key.compare("V5_SIZE_GATE_BYTES") == 0) {
+                uint32_t v;
+                conf >> v;
+                v5_size_gate_bytes = v;
+                std::cerr << "V5_SIZE_GATE_BYTES\t\t" << v5_size_gate_bytes << "\n";
+            } else if (key.compare("V5_ORACLE_POLICY") == 0) {
+                std::string v;
+                conf >> v;
+                v5_oracle_policy = v;
+                std::cerr << "V5_ORACLE_POLICY\t\t" << v5_oracle_policy << "\n";
+            } else if (key.compare("V5_ORACLE_BAD_SPINE") == 0) {
+                uint32_t v;
+                conf >> v;
+                v5_oracle_bad_spine = v;
+                std::cerr << "V5_ORACLE_BAD_SPINE\t\t" << v5_oracle_bad_spine << "\n";
+            } else if (key.compare("V5_CHUNK_COMMIT_RATE_GBPS") == 0) {
+                double v;
+                conf >> v;
+                v5_chunk_commit_rate_gbps = v;
+                std::cerr << "V5_CHUNK_COMMIT_RATE_GBPS\t" << v5_chunk_commit_rate_gbps << "\n";
+            } else if (key.compare("V5_CHUNK_LOG") == 0) {
+                uint32_t v;
+                conf >> v;
+                v5_chunk_log = v;
+                std::cerr << "V5_CHUNK_LOG\t\t\t" << v5_chunk_log << "\n";
             } else if (key.compare("FLOWLET_SWITCH_OUTPUT_FILE") == 0) {
                 std::string v;
                 conf >> v;
@@ -938,6 +1123,11 @@ int main(int argc, char *argv[]) {
                 conf >> v;
                 ooo_event_output_file = v;
                 std::cerr << "OOO_EVENT_OUTPUT_FILE\t\t\t" << ooo_event_output_file << "\n";
+            } else if (key.compare("V5_CHUNK_OUTPUT_FILE") == 0) {
+                std::string v;
+                conf >> v;
+                v5_chunk_output_file = v;
+                std::cerr << "V5_CHUNK_OUTPUT_FILE\t\t" << v5_chunk_output_file << "\n";
             } else if (key.compare("CONWEAVE_TX_EXPIRY_TIME") == 0) {
                 uint32_t v;
                 conf >> v;
@@ -1964,6 +2154,8 @@ int main(int argc, char *argv[]) {
             dportNumber[i] = 100;
         }
     }
+    LetflowRouting::ClearPinnedLanes();
+    v5_oracle_lane_bytes.clear();
 
     flow_input.idx = 0;
     port_per_host = new uint16_t[node_num - switch_num];
@@ -1999,6 +2191,9 @@ int main(int argc, char *argv[]) {
             ooo_event_output = fopen(ooo_event_output_file.c_str(), "w");
             RdmaHw::s_oooEventLog = ooo_event_output;
         }
+    }
+    if (v5_chunk_log && V5ChunkModeEnabled()) {
+        v5_chunk_output = fopen(v5_chunk_output_file.c_str(), "w");
     }
 
     uplink_output = fopen(uplink_mon_file.c_str(), "w");  // common
