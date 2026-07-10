@@ -137,7 +137,8 @@ topo2bdp = {
 
 FLOWGEN_DEFAULT_TIME = 2.0  # see /traffic_gen/traffic_gen.py::base_t
 SIM_BUILD_DIR = "build"
-SIM_BINARY = os.path.join(SIM_BUILD_DIR, "scratch", "network-load-balance")
+SIM_BINARY = os.path.join(
+    SIM_BUILD_DIR, "scratch", "network-load-balance", "network-load-balance")
 
 
 def reserve_output_dir(output_root):
