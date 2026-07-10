@@ -374,7 +374,7 @@ uint32_t V5SelectLane(uint32_t src, uint32_t dst, uint32_t chunkSize, const std:
 
 void InstallRdmaSubflow(uint32_t pg, uint32_t src, uint32_t dst, uint32_t bytes,
                         double startTime, uint32_t chunkId, bool pinLane, uint32_t lane,
-                        const std::string &policy, bool isBadLane) {
+                        const std::string &policy, bool isBadLane, bool hasBadLane) {
     uint32_t sport = portNumber[src];
     portNumber[src] = portNumber[src] + 1;
     uint32_t dport = dportNumber[dst];
@@ -387,9 +387,9 @@ void InstallRdmaSubflow(uint32_t pg, uint32_t src, uint32_t dst, uint32_t bytes,
 
     if (v5_chunk_output) {
         uint64_t startNs = (uint64_t)(startTime * 1000000000.0);
-        fprintf(v5_chunk_output, "%u %u %u %u %u %u %u %lu %u %s %u\n", flow_input.idx,
+        fprintf(v5_chunk_output, "%u %u %u %u %u %u %u %lu %u %s %u %u\n", flow_input.idx,
                 chunkId, src, dst, sport, dport, bytes, startNs, pinLane ? lane : (uint32_t)-1,
-                policy.c_str(), isBadLane ? 1 : 0);
+                policy.c_str(), isBadLane ? 1 : 0, hasBadLane ? 1 : 0);
         fflush(v5_chunk_output);
     }
 
@@ -407,7 +407,8 @@ void InstallRdmaSubflow(uint32_t pg, uint32_t src, uint32_t dst, uint32_t bytes,
     clientHelper.SetAttribute("StatFlowID", IntegerValue(flow_input.idx));
 
     ApplicationContainer appCon = clientHelper.Install(n.Get(src));
-    appCon.Start(Seconds(startTime));
+    double startDelay = std::max(0.0, startTime - Simulator::Now().GetSeconds());
+    appCon.Start(Seconds(startDelay));
     appCon.Stop(Seconds(100.0));
 }
 
@@ -468,7 +469,7 @@ void ScheduleFlowInputs(FILE *infile) {
                                              badFrac, chunkStart, degradeTime);
                 bool isBadLane = hasBadLane && lane == badLane;
                 InstallRdmaSubflow(pg, src, dst, chunkLen, chunkStart, chunkId, true, lane, policy,
-                                   isBadLane);
+                                   isBadLane, hasBadLane);
                 remaining -= chunkLen;
                 committedBytes += chunkLen;
                 chunkId++;
@@ -482,7 +483,7 @@ void ScheduleFlowInputs(FILE *infile) {
             for (uint32_t si = 0; si < nsub; si++) {
                 uint32_t sub_len = sub_base + ((si == nsub - 1) ? sub_rem : 0);
                 InstallRdmaSubflow(pg, src, dst, sub_len, flow_input.start_time, si, false, 0,
-                                   "legacy", false);
+                                   "legacy", false, false);
             }
         }
 
