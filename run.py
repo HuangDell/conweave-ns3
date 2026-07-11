@@ -1,6 +1,7 @@
 #!/usr/bin/python3
 from genericpath import exists
 import hashlib
+import json
 import math
 import subprocess
 import os
@@ -110,7 +111,7 @@ KMAX_MAP {kmax_map}
 KMIN_MAP {kmin_map}
 PMAX_MAP {pmax_map}
 LOAD {load}
-RANDOM_SEED 1
+RANDOM_SEED {random_seed}
 """
 
 
@@ -143,7 +144,15 @@ SIM_BINARY = os.path.join(
     SIM_BUILD_DIR, "scratch", "network-load-balance", "network-load-balance")
 
 
-def reserve_output_dir(output_root):
+def reserve_output_dir(output_root, requested_id=None):
+    if requested_id is not None:
+        if not requested_id or any(
+                character not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-"
+                for character in requested_id):
+            raise ValueError("--run-id may contain only letters, digits, '.', '_', and '-'")
+        output_dir = os.path.join(output_root, requested_id)
+        os.makedirs(output_dir)
+        return requested_id, output_dir
     while True:
         config_ID = str(random.randrange(MAX_RAND_RANGE))
         output_dir = os.path.join(output_root, config_ID)
@@ -231,7 +240,65 @@ def validate_flow_file(path, n_host, start_time, stop_time):
 
     print("Validated flow file: {} flows, sha256={}, path={}".format(
         row_count, digest.hexdigest(), path))
+    return {
+        "absolute_path": os.path.abspath(path),
+        "flow_count": row_count,
+        "sha256": digest.hexdigest(),
+    }
+
+
+def sha256_file(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as input_file:
+        for chunk in iter(lambda: input_file.read(1024 * 1024), b""):
+            digest.update(chunk)
     return digest.hexdigest()
+
+
+def git_metadata():
+    try:
+        commit = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], text=True).strip()
+        dirty = bool(subprocess.check_output(
+            ["git", "status", "--porcelain"], text=True).strip())
+    except (OSError, subprocess.CalledProcessError):
+        commit = "unknown"
+        dirty = None
+    return {"commit": commit, "dirty": dirty}
+
+
+def write_json(path, payload):
+    temporary = path + ".tmp"
+    with open(temporary, "w") as output_file:
+        json.dump(payload, output_file, indent=2, sort_keys=True)
+        output_file.write("\n")
+    os.replace(temporary, path)
+
+
+def parse_completion_counts(output_log, fct_output):
+    target_qp = None
+    if os.path.exists(output_log):
+        with open(output_log, "r", errors="ignore") as log_file:
+            for line in log_file:
+                if line.startswith("V5_TARGET_COMPLETION_COUNT"):
+                    target_qp = int(line.split()[-1])
+
+    finished_qp = 0
+    finished_apps = set()
+    if os.path.exists(fct_output):
+        with open(fct_output, "r") as fct_file:
+            for line in fct_file:
+                fields = line.split()
+                if len(fields) < 9:
+                    continue
+                finished_qp += 1
+                finished_apps.add(int(fields[8]))
+    return {
+        "target_qp_or_chunk": target_qp,
+        "finished_qp_or_chunk": finished_qp,
+        "finished_apps": len(finished_apps),
+        "job_membership_available": False,
+    }
 
 
 def main():
@@ -268,6 +335,10 @@ def main():
                         type=int, default=0, help="enforce to use window scheme (default: 0)")
     parser.add_argument('--sw_monitoring_interval', dest='sw_monitoring_interval', action='store',
                         type=int, default=10000, help="interval of sampling statistics for queue status (default: 10000ns)")
+    parser.add_argument('--seed', dest='seed', action='store', type=int,
+                        default=1, help="NS-3 random seed recorded in the run manifest (default: 1)")
+    parser.add_argument('--run-id', dest='run_id', action='store', default=None,
+                        help="reserve a deterministic output directory; fails if it already exists")
 
     # #### LINK DEGRADATION (v4) ####
     parser.add_argument('--degrade_link', dest='degrade_link', action='store', default=None,
@@ -440,7 +511,7 @@ def main():
                 time=args.simul_time,
                 output=os.getcwd() + "/" + flow_file))
 
-    validate_flow_file(
+    trace_metadata = validate_flow_file(
         flow_file, n_host, flowgen_start_time, flowgen_stop_time)
 
     # sanity check - bandwidth
@@ -491,7 +562,7 @@ def main():
     ##################################################################
 
     # atomically reserve the output directory for this run
-    config_ID, output_dir = reserve_output_dir(output_root)
+    config_ID, output_dir = reserve_output_dir(output_root, args.run_id)
     print("The new directory is created  - {}/".format(output_dir))
 
     config_name = os.path.join(output_dir, "config.txt")
@@ -583,12 +654,43 @@ def main():
                                         v5_oracle_policy=args.v5_oracle_policy,
                                         v5_oracle_bad_spine=args.v5_oracle_bad_spine,
                                         v5_chunk_commit_rate_gbps=args.v5_chunk_commit_rate_gbps,
-                                        v5_chunk_log=args.v5_chunk_log)
+                                        v5_chunk_log=args.v5_chunk_log,
+                                        random_seed=args.seed)
     else:
         print("unknown cc:{}".format(args.cc))
 
     with open(config_name, "w") as file:
         file.write(config)
+
+    manifest_path = os.path.join(output_dir, "run_manifest.json")
+    manifest = {
+        "schema_version": 1,
+        "run_id": config_ID,
+        "status": "prepared",
+        "created_at": datetime.now().astimezone().isoformat(),
+        "git": git_metadata(),
+        "trace": trace_metadata,
+        "config": {
+            "sha256": sha256_file(config_name),
+            "topology": topo,
+            "cc": args.cc,
+            "lb": args.lb,
+            "pfc": enabled_pfc,
+            "irn": enabled_irn,
+            "load": netload,
+            "seed": args.seed,
+            "simul_time_s": float(args.simul_time),
+            "v5_nsub": args.v5_nsub,
+            "v5_chunk_bytes": args.v5_chunk_bytes,
+            "v5_size_gate_bytes": args.v5_size_gate_bytes,
+            "v5_oracle_policy": args.v5_oracle_policy,
+            "v5_oracle_bad_spine": args.v5_oracle_bad_spine,
+            "v5_chunk_commit_rate_gbps": args.v5_chunk_commit_rate_gbps,
+            "v5_chunk_log": args.v5_chunk_log,
+            "link_degrade": link_degrade,
+        },
+    }
+    write_json(manifest_path, manifest)
 
     # run program
     print("Running simulation...")
@@ -615,6 +717,12 @@ def main():
         subprocess.check_call([sim_binary, config_name],
                               stdout=log_file, stderr=subprocess.STDOUT,
                               env=sim_env)
+
+    fct_output = os.path.join(output_dir, "{}_out_fct.txt".format(config_ID))
+    manifest["status"] = "simulation_complete"
+    manifest["completed_at"] = datetime.now().astimezone().isoformat()
+    manifest["completion"] = parse_completion_counts(output_log, fct_output)
+    write_json(manifest_path, manifest)
 
     ####################################################
     #                 Analyze the output FCT           #

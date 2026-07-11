@@ -4,6 +4,7 @@
 
 #include <ns3/applications-module.h>
 #include <ns3/letflow-routing.h>
+#include <ns3/qbb-net-device.h>
 #include <ns3/rdma-client-helper.h>
 #include <ns3/rdma-client.h>
 #include <ns3/settings.h>
@@ -12,7 +13,9 @@
 #include <cassert>
 #include <cstdio>
 #include <iostream>
+#include <iterator>
 #include <limits>
+#include <sstream>
 
 namespace nlb {
 
@@ -106,6 +109,25 @@ uint64_t TrafficScheduler::LaneCounterKey(uint32_t source_tor, uint32_t destinat
                                           bool post_degrade) const {
     return (static_cast<uint64_t>(source_tor) << 33) |
            (static_cast<uint64_t>(destination_tor) << 1) | (post_degrade ? 1 : 0);
+}
+
+uint32_t TrafficScheduler::LaneOutPort(uint32_t source_tor, uint32_t destination_tor,
+                                       uint32_t lane) const {
+    auto switch_iterator = state_.tor_by_id.find(source_tor);
+    if (switch_iterator == state_.tor_by_id.end()) {
+        return static_cast<uint32_t>(-1);
+    }
+    auto path_iterator =
+        switch_iterator->second->m_mmu->m_letflowRouting.m_letflowRoutingTable.find(
+            destination_tor);
+    if (path_iterator ==
+            switch_iterator->second->m_mmu->m_letflowRouting.m_letflowRoutingTable.end() ||
+        lane >= path_iterator->second.size()) {
+        return static_cast<uint32_t>(-1);
+    }
+    auto path_id = path_iterator->second.begin();
+    std::advance(path_id, lane);
+    return LetflowRouting::GetOutPortFromPath(*path_id, 0);
 }
 
 bool TrafficScheduler::GetBadLane(uint32_t source, uint32_t destination, uint32_t* bad_lane,
@@ -221,23 +243,62 @@ void TrafficScheduler::InstallRdmaSubflow(uint32_t pg, uint32_t source, uint32_t
                                           uint32_t bytes, double start_time, uint32_t chunk_id,
                                           bool pin_lane, uint32_t lane,
                                           const std::string& policy, bool is_bad_lane,
-                                          bool has_bad_lane) {
+                                          bool has_bad_lane, uint32_t bad_lane,
+                                          double bad_fraction, double degrade_time) {
     uint32_t source_port = source_ports_[source]++;
     uint32_t destination_port = destination_ports_[destination]++;
+    uint64_t qp_key = LetflowRouting::GetQpKey(state_.server_addresses[destination].Get(),
+                                               source_port, destination_port, pg);
 
     if (pin_lane) {
-        uint64_t qp_key = LetflowRouting::GetQpKey(state_.server_addresses[destination].Get(),
-                                                   source_port, destination_port, pg);
         LetflowRouting::RegisterPinnedLane(qp_key, lane);
     }
 
     FILE* chunk_output = monitor_.V5ChunkOutput();
     if (chunk_output) {
         uint64_t start_ns = static_cast<uint64_t>(start_time * 1000000000.0);
-        fprintf(chunk_output, "%u %u %u %u %u %u %u %lu %u %s %u %u\n", flow_input_.idx,
+        uint32_t source_tor =
+            Settings::hostIp2SwitchId[state_.server_addresses[source].Get()];
+        uint32_t destination_tor =
+            Settings::hostIp2SwitchId[state_.server_addresses[destination].Get()];
+        uint32_t out_port = pin_lane ? LaneOutPort(source_tor, destination_tor, lane)
+                                     : static_cast<uint32_t>(-1);
+        std::ostringstream capacities;
+        std::ostringstream weights;
+        for (uint32_t current_lane = 0; current_lane < config_.traffic.v5_nsub;
+             ++current_lane) {
+            if (current_lane > 0) {
+                capacities << ';';
+                weights << ';';
+            }
+            uint32_t current_port = LaneOutPort(source_tor, destination_tor, current_lane);
+            uint64_t capacity_bps = 0;
+            if (current_port != static_cast<uint32_t>(-1)) {
+                Ptr<QbbNetDevice> device = DynamicCast<QbbNetDevice>(
+                    state_.nodes.Get(source_tor)->GetDevice(current_port));
+                capacity_bps = device ? device->GetDataRate().GetBitRate() : 0;
+            }
+            if (has_bad_lane && current_lane == bad_lane && start_time >= degrade_time) {
+                capacity_bps = static_cast<uint64_t>(capacity_bps * bad_fraction);
+            }
+            capacities << capacity_bps;
+            double weight = 1.0;
+            if (has_bad_lane && current_lane == bad_lane) {
+                if (policy == "avoid") {
+                    weight = 0.0;
+                } else if (policy == "proportional") {
+                    weight = bad_fraction;
+                }
+            }
+            weights << weight;
+        }
+        fprintf(chunk_output,
+                "%u %u %u %u %u %u %u %lu %u %s %u %u %lu %u %u %u %u %s %s na\n",
+                flow_input_.idx,
                 chunk_id, source, destination, source_port, destination_port, bytes, start_ns,
                 pin_lane ? lane : static_cast<uint32_t>(-1), policy.c_str(),
-                is_bad_lane ? 1 : 0, has_bad_lane ? 1 : 0);
+                is_bad_lane ? 1 : 0, has_bad_lane ? 1 : 0, qp_key, source_tor,
+                destination_tor, out_port, 0, capacities.str().c_str(), weights.str().c_str());
         fflush(chunk_output);
     }
 
@@ -322,7 +383,8 @@ void TrafficScheduler::ScheduleFlowInputs() {
                                            degrade_time);
                 InstallRdmaSubflow(priority_group, source, destination, chunk_length, chunk_start,
                                    chunk_id, true, lane, policy,
-                                   has_bad_lane && lane == bad_lane, has_bad_lane);
+                                   has_bad_lane && lane == bad_lane, has_bad_lane, bad_lane,
+                                   bad_fraction, degrade_time);
                 remaining -= chunk_length;
                 committed_bytes += chunk_length;
                 ++chunk_id;
@@ -337,7 +399,9 @@ void TrafficScheduler::ScheduleFlowInputs() {
             for (uint32_t i = 0; i < subflow_count; ++i) {
                 uint32_t subflow_length = base_length + (i == subflow_count - 1 ? remainder : 0);
                 InstallRdmaSubflow(priority_group, source, destination, subflow_length,
-                                   flow_input_.start_time, i, false, 0, "legacy", false, false);
+                                   flow_input_.start_time, i, false, 0, "legacy", false, false,
+                                   static_cast<uint32_t>(-1), 1.0,
+                                   std::numeric_limits<double>::max());
             }
         }
         ++flow_input_.idx;

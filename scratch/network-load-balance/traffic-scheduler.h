@@ -40,6 +40,8 @@ class TrafficScheduler {
     uint64_t CalculateTargetCompletionCount();
     uint64_t LaneCounterKey(uint32_t source_tor, uint32_t destination_tor,
                             bool post_degrade) const;
+    uint32_t LaneOutPort(uint32_t source_tor, uint32_t destination_tor,
+                         uint32_t lane) const;
     bool GetBadLane(uint32_t source, uint32_t destination, uint32_t* bad_lane,
                     double* bad_fraction, double* degrade_time);
     std::string ActivePolicy(bool has_bad_lane, double chunk_start_time,
@@ -49,7 +51,8 @@ class TrafficScheduler {
                         double bad_fraction, double chunk_start_time, double degrade_time);
     void InstallRdmaSubflow(uint32_t pg, uint32_t source, uint32_t destination, uint32_t bytes,
                             double start_time, uint32_t chunk_id, bool pin_lane, uint32_t lane,
-                            const std::string& policy, bool is_bad_lane, bool has_bad_lane);
+                            const std::string& policy, bool is_bad_lane, bool has_bad_lane,
+                            uint32_t bad_lane, double bad_fraction, double degrade_time);
     void ReadFlowInput();
     void ScheduleFlowInputs();
 
