@@ -1,5 +1,7 @@
 #!/usr/bin/python3
 from genericpath import exists
+import hashlib
+import math
 import subprocess
 import os
 import time
@@ -166,6 +168,70 @@ def direct_run_env():
     env[path_var] = os.pathsep.join(
         [lib_dir, current_path] if current_path else [lib_dir])
     return env, path_var, lib_dir
+
+
+def validate_flow_file(path, n_host, start_time, stop_time):
+    """Fail fast on malformed or internally inconsistent traffic traces."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as raw_file:
+        for chunk in iter(lambda: raw_file.read(1024 * 1024), b""):
+            digest.update(chunk)
+
+    with open(path, "r") as flow_file_handle:
+        header = flow_file_handle.readline()
+        header_fields = header.split()
+        if len(header_fields) != 1:
+            raise ValueError("FLOW_FILE line 1 must contain exactly one flow count: {}".format(path))
+        try:
+            declared_count = int(header_fields[0])
+        except ValueError as exc:
+            raise ValueError("FLOW_FILE line 1 has an invalid flow count: {}".format(path)) from exc
+        if declared_count < 0:
+            raise ValueError("FLOW_FILE flow count must be non-negative: {}".format(path))
+
+        row_count = 0
+        previous_start = None
+        for line_number, line in enumerate(flow_file_handle, start=2):
+            fields = line.split()
+            if len(fields) != 5:
+                raise ValueError(
+                    "FLOW_FILE line {} must contain exactly 5 fields, found {}: {}".format(
+                        line_number, len(fields), path))
+            try:
+                src, dst, pg, size = map(int, fields[:4])
+                flow_start = float(fields[4])
+            except ValueError as exc:
+                raise ValueError(
+                    "FLOW_FILE line {} contains an invalid numeric field: {}".format(
+                        line_number, path)) from exc
+
+            if not (0 <= src < n_host and 0 <= dst < n_host and src != dst):
+                raise ValueError(
+                    "FLOW_FILE line {} has invalid endpoints src={}, dst={} for {} hosts: {}".format(
+                        line_number, src, dst, n_host, path))
+            if pg < 0 or size <= 0:
+                raise ValueError(
+                    "FLOW_FILE line {} requires pg >= 0 and size > 0: {}".format(
+                        line_number, path))
+            if not math.isfinite(flow_start) or not (start_time <= flow_start <= stop_time):
+                raise ValueError(
+                    "FLOW_FILE line {} has start time {} outside [{}, {}]: {}".format(
+                        line_number, flow_start, start_time, stop_time, path))
+            if previous_start is not None and flow_start < previous_start:
+                raise ValueError(
+                    "FLOW_FILE line {} is not ordered by start time ({} < {}): {}".format(
+                        line_number, flow_start, previous_start, path))
+            previous_start = flow_start
+            row_count += 1
+
+    if row_count != declared_count:
+        raise ValueError(
+            "FLOW_FILE declares {} flows but contains {} rows: {}".format(
+                declared_count, row_count, path))
+
+    print("Validated flow file: {} flows, sha256={}, path={}".format(
+        row_count, digest.hexdigest(), path))
+    return digest.hexdigest()
 
 
 def main():
@@ -373,6 +439,9 @@ def main():
                 bw=args.bw + "G",
                 time=args.simul_time,
                 output=os.getcwd() + "/" + flow_file))
+
+    validate_flow_file(
+        flow_file, n_host, flowgen_start_time, flowgen_stop_time)
 
     # sanity check - bandwidth
     with open("config/{topo}.txt".format(topo=args.topo), 'r') as f_topo:
