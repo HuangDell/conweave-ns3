@@ -84,13 +84,13 @@ class LetflowRouting : public Object {
     static uint32_t GetOutPortFromPath(const uint32_t& path, const uint32_t& hopCount);               // decode outPort from path, given a hop's order
     static void SetOutPortToPath(uint32_t& path, const uint32_t& hopCount, const uint32_t& outPort);  // encode outPort to path
     static uint32_t nFlowletTimeout;                                                                  // number of flowlet's timeout
-    static void RegisterPinnedLane(uint64_t qpkey, uint32_t lane);
+    static void RegisterPinnedLane(uint32_t sip, uint64_t qpkey, uint32_t lane);
     static void ClearPinnedLanes();
 
     /* main function */
     uint32_t RouteInput(Ptr<Packet> p, CustomHeader ch);
     uint32_t GetRandomPath(uint32_t dstTorId);
-    uint32_t GetPinnedPath(uint32_t dstTorId, uint64_t qpkey);
+    uint32_t GetPinnedPath(uint32_t dstTorId, uint32_t sip, uint64_t qpkey);
     virtual void DoDispose();
 
     /* SET functions */
@@ -116,8 +116,9 @@ class LetflowRouting : public Object {
     Time m_flowletTimeout;  // flowlet timeout (e.g., 100us)
 
     // local
-    std::map<uint64_t, Flowlet*> m_flowletTable;  // QpKey -> Flowlet (at SrcToR)
-    static std::unordered_map<uint64_t, uint32_t> s_pinnedLane;  // QpKey -> deterministic lane
+    using FlowKey = std::pair<uint32_t, uint64_t>;  // (source IP, sender-local QpKey)
+    std::map<FlowKey, Flowlet*> m_flowletTable;  // FlowKey -> Flowlet (at SrcToR)
+    static std::map<FlowKey, uint32_t> s_pinnedLane;  // FlowKey -> deterministic lane
 };
 
 }  // namespace ns3

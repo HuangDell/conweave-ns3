@@ -80,7 +80,7 @@ void LetflowTag::Print(std::ostream& os) const {
 
 /*----- Letflow-Route ------*/
 uint32_t LetflowRouting::nFlowletTimeout = 0;
-std::unordered_map<uint64_t, uint32_t> LetflowRouting::s_pinnedLane;
+std::map<LetflowRouting::FlowKey, uint32_t> LetflowRouting::s_pinnedLane;
 LetflowRouting::LetflowRouting() {
     m_isToR = false;
     m_switch_id = (uint32_t)-1;
@@ -95,8 +95,8 @@ uint64_t LetflowRouting::GetQpKey(uint32_t dip, uint16_t sport, uint16_t dport, 
     return ((uint64_t)dip << 32) | ((uint64_t)sport << 16) | (uint64_t)pg | (uint64_t)dport;
 }
 
-void LetflowRouting::RegisterPinnedLane(uint64_t qpkey, uint32_t lane) {
-    s_pinnedLane[qpkey] = lane;
+void LetflowRouting::RegisterPinnedLane(uint32_t sip, uint64_t qpkey, uint32_t lane) {
+    s_pinnedLane[FlowKey(sip, qpkey)] = lane;
 }
 
 void LetflowRouting::ClearPinnedLanes() {
@@ -138,6 +138,7 @@ uint32_t LetflowRouting::RouteInput(Ptr<Packet> p, CustomHeader ch) {
     // get QpKey to find flowlet
     NS_ASSERT_MSG(ch.l3Prot == 0x11, "Only supports UDP data packets");
     uint64_t qpkey = GetQpKey(ch.dip, ch.udp.sport, ch.udp.dport, ch.udp.pg);
+    FlowKey flowkey(ch.sip, qpkey);
 
     // get LetflowTag from packet
     LetflowTag letflowTag;
@@ -147,7 +148,7 @@ uint32_t LetflowRouting::RouteInput(Ptr<Packet> p, CustomHeader ch) {
         if (!found) {  // sender-side
             /*---- choosing outPort ----*/
             struct Flowlet* flowlet = NULL;
-            auto flowletItr = m_flowletTable.find(qpkey);
+            auto flowletItr = m_flowletTable.find(flowkey);
             uint32_t selectedPath;
 
             // 1) when flowlet already exists
@@ -176,7 +177,7 @@ uint32_t LetflowRouting::RouteInput(Ptr<Packet> p, CustomHeader ch) {
 
                 /*---- Flowlet Timeout ----*/
                 // NS_LOG_FUNCTION("Flowlet expires, calculate the new port");
-                selectedPath = GetPinnedPath(dstToRId, qpkey);
+                selectedPath = GetPinnedPath(dstToRId, ch.sip, qpkey);
                 LetflowRouting::nFlowletTimeout++;
 
                 // update flowlet info
@@ -198,13 +199,13 @@ uint32_t LetflowRouting::RouteInput(Ptr<Packet> p, CustomHeader ch) {
                 return GetOutPortFromPath(selectedPath, letflowTag.GetHopCount());
             }
             // 2) flowlet does not exist, e.g., first packet of flow
-            selectedPath = GetPinnedPath(dstToRId, qpkey);
+            selectedPath = GetPinnedPath(dstToRId, ch.sip, qpkey);
             struct Flowlet* newFlowlet = new Flowlet;
             newFlowlet->_activeTime = now;
             newFlowlet->_activatedTime = now;
             newFlowlet->_nPackets = 1;
             newFlowlet->_PathId = selectedPath;
-            m_flowletTable[qpkey] = newFlowlet;
+            m_flowletTable[flowkey] = newFlowlet;
 
             // update/add letflowTag
             uint32_t outPort = GetOutPortFromPath(selectedPath, 0);
@@ -257,8 +258,8 @@ uint32_t LetflowRouting::GetRandomPath(uint32_t dstToRId) {
     return *innerPathItr;
 }
 
-uint32_t LetflowRouting::GetPinnedPath(uint32_t dstToRId, uint64_t qpkey) {
-    auto pinItr = s_pinnedLane.find(qpkey);
+uint32_t LetflowRouting::GetPinnedPath(uint32_t dstToRId, uint32_t sip, uint64_t qpkey) {
+    auto pinItr = s_pinnedLane.find(FlowKey(sip, qpkey));
     if (pinItr == s_pinnedLane.end()) {
         return GetRandomPath(dstToRId);
     }

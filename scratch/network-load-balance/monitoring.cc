@@ -17,6 +17,21 @@ using namespace ns3;
 
 NS_LOG_COMPONENT_DEFINE("NetworkLoadBalanceMonitoring");
 
+namespace {
+
+uint64_t PersistentPoolKey(Ptr<RdmaQueuePair> queue_pair) {
+    uint32_t source = Settings::ip_to_node_id(queue_pair->sip);
+    uint32_t destination = Settings::ip_to_node_id(queue_pair->dip);
+    NS_ASSERT_MSG(source <= 0xffff && destination <= 0xffff && queue_pair->m_pg <= 0xffff &&
+                      queue_pair->m_v5_lane <= 0xffff,
+                  "persistent pool key field overflow");
+    return (static_cast<uint64_t>(source) << 48) |
+           (static_cast<uint64_t>(destination) << 32) |
+           (static_cast<uint64_t>(queue_pair->m_pg) << 16) | queue_pair->m_v5_lane;
+}
+
+}  // namespace
+
 SimulationMonitor::SimulationMonitor(const ExperimentConfig& config, SimulationState& state)
     : config_(config), state_(state) {}
 
@@ -229,8 +244,7 @@ void SimulationMonitor::RecordQpState(Ptr<RdmaQueuePair> queue_pair, const char*
     if (rx_qp) {
         receiver_expected = rx_qp->ReceiverNextExpectedSeq;
     }
-    uint64_t qp_key = RdmaHw::GetQpKey(queue_pair->dip.Get(), queue_pair->sport,
-                                      queue_pair->dport, queue_pair->m_pg);
+    uint64_t qp_key = PersistentPoolKey(queue_pair);
     fprintf(v5_qp_state_output_,
             "%lu,%s,%lu,%u,%u,%u,%u,%u,%u,%lu,%lu,%u,%lu,%lu,%.17g,%lu,%lu\n",
             Simulator::Now().GetNanoSeconds(), event, qp_key, source_id, destination_id,
@@ -246,8 +260,7 @@ void SimulationMonitor::RecordWqeEvent(Ptr<RdmaQueuePair> queue_pair, uint32_t e
                                        RdmaQueuePair::WqeBoundary boundary) {
     NS_ASSERT_MSG(event == RdmaHw::WQE_COMMIT || event == RdmaHw::WQE_COMPLETE,
                   "unknown persistent WQE event");
-    uint64_t qp_key = RdmaHw::GetQpKey(queue_pair->dip.Get(), queue_pair->sport,
-                                      queue_pair->dport, queue_pair->m_pg);
+    uint64_t qp_key = PersistentPoolKey(queue_pair);
     uint64_t complete_time = event == RdmaHw::WQE_COMPLETE
                                  ? Simulator::Now().GetNanoSeconds()
                                  : 0;

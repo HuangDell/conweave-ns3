@@ -313,7 +313,7 @@ void TrafficScheduler::InstallRdmaSubflow(uint32_t pg, uint32_t source, uint32_t
     }
 
     if (pin_lane) {
-        LetflowRouting::RegisterPinnedLane(qp_key, lane);
+        LetflowRouting::RegisterPinnedLane(state_.server_addresses[source].Get(), qp_key, lane);
     }
 
     FILE* chunk_output = monitor_.V5ChunkOutput();
@@ -373,7 +373,8 @@ void TrafficScheduler::InstallRdmaSubflow(uint32_t pg, uint32_t source, uint32_t
                 flow_input_.idx,
                 chunk_id, source, destination, source_port, destination_port, bytes, start_ns,
                 pin_lane ? lane : static_cast<uint32_t>(-1), policy.c_str(),
-                is_bad_lane ? 1 : 0, has_bad_lane ? 1 : 0, qp_key, source_tor,
+                is_bad_lane ? 1 : 0, has_bad_lane ? 1 : 0,
+                PersistentPoolEnabled() ? pool_key : qp_key, source_tor,
                 destination_tor, out_port, 0, capacities.str().c_str(), weights.str().c_str(),
                 deficits.str().c_str());
         fflush(chunk_output);
@@ -439,7 +440,8 @@ TrafficScheduler::PersistentPoolEntry& TrafficScheduler::GetPersistentPoolEntry(
         entry.qp_key = LetflowRouting::GetQpKey(
             state_.server_addresses[destination].Get(), entry.source_port,
             entry.destination_port, entry.pg);
-        LetflowRouting::RegisterPinnedLane(entry.qp_key, lane);
+        LetflowRouting::RegisterPinnedLane(state_.server_addresses[source].Get(), entry.qp_key,
+                                           lane);
     }
     return entry;
 }
