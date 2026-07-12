@@ -11,6 +11,10 @@ TypeId RdmaDriver::GetTypeId (void)
 		.SetParent<Object> ()
 		.AddTraceSource ("QpComplete", "A qp completes.",
 				MakeTraceSourceAccessor (&RdmaDriver::m_traceQpComplete))
+		.AddTraceSource ("PersistentQpEvent", "A persistent QP changes lifecycle state.",
+				MakeTraceSourceAccessor (&RdmaDriver::m_tracePersistentQpEvent))
+		.AddTraceSource ("WqeEvent", "A persistent-QP WQE is committed or completes.",
+				MakeTraceSourceAccessor (&RdmaDriver::m_traceWqeEvent))
 		;
 	return tid;
 }
@@ -49,7 +53,9 @@ void RdmaDriver::Init(void){
 	#endif
 	// RdmaHw do setup
 	m_rdma->SetNode(m_node);
-	m_rdma->Setup(MakeCallback(&RdmaDriver::QpComplete, this));
+	m_rdma->Setup(MakeCallback(&RdmaDriver::QpComplete, this),
+		MakeCallback(&RdmaDriver::PersistentQpEvent, this),
+		MakeCallback(&RdmaDriver::WqeEvent, this));
 }
 
 void RdmaDriver::SetNode(Ptr<Node> node){
@@ -64,8 +70,29 @@ void RdmaDriver::AddQueuePair(uint64_t size, uint16_t pg, Ipv4Address sip, Ipv4A
 	m_rdma->AddQueuePair(size, pg, sip, dip, sport, dport, win, baseRtt, flow_id);
 }
 
+Ptr<RdmaQueuePair> RdmaDriver::AppendPersistentWqe(uint16_t pg, Ipv4Address sip,
+	Ipv4Address dip, uint16_t sport, uint16_t dport, uint32_t win, uint64_t baseRtt,
+	int32_t app_id, uint32_t chunk_id, uint64_t bytes, uint32_t lane) {
+	return m_rdma->AppendPersistentWqe(pg, sip, dip, sport, dport, win, baseRtt, app_id,
+		chunk_id, bytes, lane);
+}
+
+void RdmaDriver::SealPersistentQueuePair(uint32_t dip, uint16_t sport, uint16_t dport,
+	uint16_t pg, uint64_t expected_wqes) {
+	m_rdma->SealPersistentQueuePair(dip, sport, dport, pg, expected_wqes);
+}
+
 void RdmaDriver::QpComplete(Ptr<RdmaQueuePair> q){
 	m_traceQpComplete(q);
+}
+
+void RdmaDriver::PersistentQpEvent(Ptr<RdmaQueuePair> q, uint32_t event) {
+	m_tracePersistentQpEvent(q, event);
+}
+
+void RdmaDriver::WqeEvent(Ptr<RdmaQueuePair> q, uint32_t event,
+	RdmaQueuePair::WqeBoundary boundary) {
+	m_traceWqeEvent(q, event, boundary);
 }
 
 } // namespace ns3

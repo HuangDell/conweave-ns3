@@ -69,9 +69,15 @@ V5_ORACLE_POLICY {v5_oracle_policy}
 V5_ORACLE_BAD_SPINE {v5_oracle_bad_spine}
 V5_CHUNK_COMMIT_RATE_GBPS {v5_chunk_commit_rate_gbps}
 V5_CHUNK_LOG {v5_chunk_log}
+V5_QP_POOL {v5_qp_pool}
+V5_QP_POOL_SIZE {v5_qp_pool_size}
+V5_WQE_LOG {v5_wqe_log}
+V5_QP_STATE_LOG {v5_qp_state_log}
 FLOWLET_SWITCH_OUTPUT_FILE mix/output/{id}/{id}_out_flowlet_switch.txt
 OOO_EVENT_OUTPUT_FILE mix/output/{id}/{id}_out_ooo_events.txt
 V5_CHUNK_OUTPUT_FILE mix/output/{id}/{id}_out_v5_chunk.txt
+V5_WQE_OUTPUT_FILE mix/output/{id}/{id}_out_v5_wqe.csv
+V5_QP_STATE_OUTPUT_FILE mix/output/{id}/{id}_out_v5_qp_state.csv
 
 ALPHA_RESUME_INTERVAL 1
 RATE_DECREASE_INTERVAL 4
@@ -381,6 +387,14 @@ def main():
                         default=100.0, help="v5 G-new-a: host chunk commit rate in Gbps (default: 100)")
     parser.add_argument('--v5_chunk_log', dest='v5_chunk_log', action='store', type=int,
                         default=0, help="v5 G-new-a: enable per-chunk assignment log (default: 0)")
+    parser.add_argument('--v5_qp_pool', dest='v5_qp_pool', action='store', type=int,
+                        default=0, help="v5 S2: reuse a fixed per-path persistent QP pool (default: 0)")
+    parser.add_argument('--v5_qp_pool_size', dest='v5_qp_pool_size', action='store', type=int,
+                        default=4, help="v5 S2: persistent QPs/lanes per sender-receiver pair (default: 4)")
+    parser.add_argument('--v5_wqe_log', dest='v5_wqe_log', action='store', type=int,
+                        default=0, help="v5 S2: log persistent WQE commit/completion events (default: 0)")
+    parser.add_argument('--v5_qp_state_log', dest='v5_qp_state_log', action='store', type=int,
+                        default=0, help="v5 S2: log persistent QP lifecycle and boundary state (default: 0)")
 
     # #### CONWEAVE PARAMETERS ####
     # parser.add_argument('--cwh_extra_reply_deadline', dest='cwh_extra_reply_deadline', action='store',
@@ -450,6 +464,16 @@ def main():
         raise Exception("CONFIG ERROR : --v5_size_gate_bytes must be >= 0")
     if args.v5_chunk_commit_rate_gbps <= 0:
         raise Exception("CONFIG ERROR : --v5_chunk_commit_rate_gbps must be > 0")
+    if args.v5_qp_pool not in (0, 1):
+        raise Exception("CONFIG ERROR : --v5_qp_pool must be 0 or 1")
+    if args.v5_qp_pool_size < 1:
+        raise Exception("CONFIG ERROR : --v5_qp_pool_size must be >= 1")
+    if args.v5_qp_pool and args.v5_qp_pool_size != args.v5_nsub:
+        raise Exception("CONFIG ERROR : persistent pool currently requires --v5_qp_pool_size == --v5_nsub")
+    if args.v5_wqe_log not in (0, 1) or args.v5_qp_state_log not in (0, 1):
+        raise Exception("CONFIG ERROR : --v5_wqe_log and --v5_qp_state_log must be 0 or 1")
+    if (args.v5_wqe_log or args.v5_qp_state_log) and not args.v5_qp_pool:
+        raise Exception("CONFIG ERROR : S2 WQE/QP logs require --v5_qp_pool 1")
 
     # get over-subscription ratio from topoogy name
 
@@ -655,6 +679,10 @@ def main():
                                         v5_oracle_bad_spine=args.v5_oracle_bad_spine,
                                         v5_chunk_commit_rate_gbps=args.v5_chunk_commit_rate_gbps,
                                         v5_chunk_log=args.v5_chunk_log,
+                                        v5_qp_pool=args.v5_qp_pool,
+                                        v5_qp_pool_size=args.v5_qp_pool_size,
+                                        v5_wqe_log=args.v5_wqe_log,
+                                        v5_qp_state_log=args.v5_qp_state_log,
                                         random_seed=args.seed)
     else:
         print("unknown cc:{}".format(args.cc))
@@ -669,6 +697,10 @@ def main():
         "status": "prepared",
         "created_at": datetime.now().astimezone().isoformat(),
         "git": git_metadata(),
+        "binary": {
+            "absolute_path": os.path.abspath(SIM_BINARY),
+            "sha256": sha256_file(SIM_BINARY) if exists(SIM_BINARY) else None,
+        },
         "trace": trace_metadata,
         "config": {
             "sha256": sha256_file(config_name),
@@ -687,6 +719,10 @@ def main():
             "v5_oracle_bad_spine": args.v5_oracle_bad_spine,
             "v5_chunk_commit_rate_gbps": args.v5_chunk_commit_rate_gbps,
             "v5_chunk_log": args.v5_chunk_log,
+            "v5_qp_pool": args.v5_qp_pool,
+            "v5_qp_pool_size": args.v5_qp_pool_size,
+            "v5_wqe_log": args.v5_wqe_log,
+            "v5_qp_state_log": args.v5_qp_state_log,
             "link_degrade": link_degrade,
         },
     }

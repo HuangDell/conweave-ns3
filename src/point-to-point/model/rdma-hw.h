@@ -24,6 +24,20 @@ struct RdmaInterfaceMgr {
 
 class RdmaHw : public Object {
    public:
+    enum PersistentQpEvent {
+        PERSISTENT_QP_CREATE = 0,
+        PERSISTENT_QP_WAKE = 1,
+        PERSISTENT_QP_IDLE = 2,
+        PERSISTENT_QP_TEARDOWN = 3,
+        PERSISTENT_QP_PACKET = 4,
+        PERSISTENT_QP_ACK = 5,
+    };
+
+    enum WqeEvent {
+        WQE_COMMIT = 0,
+        WQE_COMPLETE = 1,
+    };
+
     static TypeId GetTypeId(void);
     RdmaHw();
 
@@ -45,10 +59,16 @@ class RdmaHw : public Object {
 
     // qp complete callback
     typedef Callback<void, Ptr<RdmaQueuePair>> QpCompleteCallback;
+    typedef Callback<void, Ptr<RdmaQueuePair>, uint32_t> PersistentQpEventCallback;
+    typedef Callback<void, Ptr<RdmaQueuePair>, uint32_t, RdmaQueuePair::WqeBoundary>
+        WqeEventCallback;
     QpCompleteCallback m_qpCompleteCallback;
+    PersistentQpEventCallback m_persistentQpEventCallback;
+    WqeEventCallback m_wqeEventCallback;
 
     void SetNode(Ptr<Node> node);
-    void Setup(QpCompleteCallback cb);  // setup shared data and callbacks with the QbbNetDevice
+    void Setup(QpCompleteCallback qp_complete_cb, PersistentQpEventCallback qp_event_cb,
+               WqeEventCallback wqe_event_cb);
 
     /* Akashic Record of finished QP */
     std::unordered_set<uint64_t> akashic_Qp;    // instance for each src
@@ -69,6 +89,12 @@ class RdmaHw : public Object {
                       uint16_t _sport, uint16_t _dport, uint32_t win, uint64_t baseRtt) {
         this->AddQueuePair(size, pg, _sip, _dip, _sport, _dport, win, baseRtt, -1);
     }
+    Ptr<RdmaQueuePair> AppendPersistentWqe(
+        uint16_t pg, Ipv4Address sip, Ipv4Address dip, uint16_t sport, uint16_t dport,
+        uint32_t win, uint64_t baseRtt, int32_t app_id, uint32_t chunk_id, uint64_t bytes,
+        uint32_t lane);
+    void SealPersistentQueuePair(uint32_t dip, uint16_t sport, uint16_t dport, uint16_t pg,
+                                 uint64_t expected_wqes);
 
     /* RxQueuePair */
     static uint64_t GetRxQpKey(uint32_t dip, uint16_t dport, uint16_t sport, uint16_t pg);
@@ -110,6 +136,7 @@ class RdmaHw : public Object {
     uint32_t cnp_by_ecn;
     uint32_t cnp_by_ooo;
     uint32_t cnp_total;
+    bool m_persistentPacketEvents;
 
     /* G3: per-event OoO log (set by scenario harness; NULL = disabled) */
     static FILE* s_oooEventLog;
@@ -189,6 +216,13 @@ class RdmaHw : public Object {
     Time m_irn_rtoLow;
     Time m_irn_rtoHigh;
     uint32_t m_irn_bdp;
+
+   private:
+    Ptr<RdmaQueuePair> CreateQueuePair(uint64_t size, uint16_t pg, Ipv4Address sip,
+                                       Ipv4Address dip, uint16_t sport, uint16_t dport,
+                                       uint32_t win, uint64_t baseRtt, int32_t flow_id);
+    void RegisterQueuePair(Ptr<RdmaQueuePair> qp, bool notify_nic = true);
+    void CompletePersistentWqes(Ptr<RdmaQueuePair> qp);
 };
 
 } /* namespace ns3 */

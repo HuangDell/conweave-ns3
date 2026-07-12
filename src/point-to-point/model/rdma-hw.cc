@@ -5,6 +5,7 @@
 #include <ns3/simulator.h>
 #include <ns3/udp-header.h>
 
+#include <algorithm>
 #include <climits>
 
 #include <cstdio>
@@ -139,10 +140,13 @@ RdmaHw::RdmaHw() {
     cnp_total = 0;
     cnp_by_ecn = 0;
     cnp_by_ooo = 0;
+    m_persistentPacketEvents = false;
 }
 
 void RdmaHw::SetNode(Ptr<Node> node) { m_node = node; }
-void RdmaHw::Setup(QpCompleteCallback cb) {
+void RdmaHw::Setup(QpCompleteCallback qp_complete_cb,
+                   PersistentQpEventCallback qp_event_cb,
+                   WqeEventCallback wqe_event_cb) {
     for (uint32_t i = 0; i < m_nic.size(); i++) {
         Ptr<QbbNetDevice> dev = m_nic[i].dev;
         if (dev == NULL) continue;
@@ -157,7 +161,9 @@ void RdmaHw::Setup(QpCompleteCallback cb) {
         dev->m_rdmaEQ->m_rdmaGetNxtPkt = MakeCallback(&RdmaHw::GetNxtPacket, this);
     }
     // setup qp complete callback
-    m_qpCompleteCallback = cb;
+    m_qpCompleteCallback = qp_complete_cb;
+    m_persistentQpEventCallback = qp_event_cb;
+    m_wqeEventCallback = wqe_event_cb;
 }
 
 uint32_t RdmaHw::GetNicIdxOfQp(Ptr<RdmaQueuePair> qp) {
@@ -184,10 +190,9 @@ Ptr<RdmaQueuePair> RdmaHw::GetQp(uint64_t key) {
 
     return NULL;
 }
-void RdmaHw::AddQueuePair(uint64_t size, uint16_t pg, Ipv4Address sip, Ipv4Address dip,
-                          uint16_t sport, uint16_t dport, uint32_t win, uint64_t baseRtt,
-                          int32_t flow_id) {
-    // create qp
+Ptr<RdmaQueuePair> RdmaHw::CreateQueuePair(uint64_t size, uint16_t pg, Ipv4Address sip,
+                                           Ipv4Address dip, uint16_t sport, uint16_t dport,
+                                           uint32_t win, uint64_t baseRtt, int32_t flow_id) {
     Ptr<RdmaQueuePair> qp = CreateObject<RdmaQueuePair>(pg, sip, dip, sport, dport);
     qp->SetSize(size);
     qp->SetWin(win);
@@ -203,10 +208,14 @@ void RdmaHw::AddQueuePair(uint64_t size, uint16_t pg, Ipv4Address sip, Ipv4Addre
         qp->irn.m_rtoHigh = m_irn_rtoHigh;
     }
 
-    // add qp
+    return qp;
+}
+
+void RdmaHw::RegisterQueuePair(Ptr<RdmaQueuePair> qp, bool notify_nic) {
     uint32_t nic_idx = GetNicIdxOfQp(qp);
     m_nic[nic_idx].qpGrp->AddQp(qp);
-    uint64_t key = GetQpKey(dip.Get(), sport, dport, pg);
+    uint64_t key = GetQpKey(qp->dip.Get(), qp->sport, qp->dport, qp->m_pg);
+    NS_ASSERT_MSG(m_qpMap.find(key) == m_qpMap.end(), "duplicate active RDMA QP key");
     m_qpMap[key] = qp;
 
     // set init variables
@@ -224,8 +233,75 @@ void RdmaHw::AddQueuePair(uint64_t size, uint16_t pg, Ipv4Address sip, Ipv4Addre
         qp->tmly.m_curRate = m_bps;
     }
 
-    // Notify Nic
-    m_nic[nic_idx].dev->NewQp(qp);
+    if (notify_nic) {
+        m_nic[nic_idx].dev->NewQp(qp);
+    }
+}
+
+void RdmaHw::AddQueuePair(uint64_t size, uint16_t pg, Ipv4Address sip, Ipv4Address dip,
+                          uint16_t sport, uint16_t dport, uint32_t win, uint64_t baseRtt,
+                          int32_t flow_id) {
+    RegisterQueuePair(CreateQueuePair(size, pg, sip, dip, sport, dport, win, baseRtt, flow_id));
+}
+
+Ptr<RdmaQueuePair> RdmaHw::AppendPersistentWqe(
+    uint16_t pg, Ipv4Address sip, Ipv4Address dip, uint16_t sport, uint16_t dport,
+    uint32_t win, uint64_t baseRtt, int32_t app_id, uint32_t chunk_id, uint64_t bytes,
+    uint32_t lane) {
+    uint64_t key = GetQpKey(dip.Get(), sport, dport, pg);
+    Ptr<RdmaQueuePair> qp = GetQp(key);
+    bool created = qp == NULL;
+    bool was_idle = false;
+    if (created) {
+        qp = CreateQueuePair(0, pg, sip, dip, sport, dport, win, baseRtt, app_id);
+        qp->m_persistent = true;
+        qp->m_v5_lane = lane;
+    } else {
+        NS_ASSERT_MSG(qp->m_persistent, "persistent append collided with a legacy QP");
+        NS_ASSERT_MSG(qp->sip == sip && qp->dip == dip && qp->m_pg == pg &&
+                          qp->sport == sport && qp->dport == dport && qp->m_v5_lane == lane,
+                      "persistent QP identity or lane changed");
+        NS_ASSERT_MSG(!qp->m_pool_sealed, "cannot append to a sealed persistent QP");
+        was_idle = qp->IsPersistentIdle();
+    }
+
+    RdmaQueuePair::WqeBoundary boundary =
+        qp->AppendWqe(static_cast<uint32_t>(app_id), chunk_id, bytes, Simulator::Now());
+    if (created) {
+        RegisterQueuePair(qp, false);
+        if (!m_persistentQpEventCallback.IsNull()) {
+            m_persistentQpEventCallback(qp, PERSISTENT_QP_CREATE);
+        }
+    } else {
+        uint32_t nic_idx = GetNicIdxOfQp(qp);
+        m_nic[nic_idx].qpGrp->ClearQpFinished(qp);
+        if (was_idle && !m_persistentQpEventCallback.IsNull()) {
+            m_persistentQpEventCallback(qp, PERSISTENT_QP_WAKE);
+        }
+    }
+    if (!m_wqeEventCallback.IsNull()) {
+        m_wqeEventCallback(qp, WQE_COMMIT, boundary);
+    }
+    if (created) {
+        m_nic[GetNicIdxOfQp(qp)].dev->NewQp(qp);
+    } else {
+        m_nic[GetNicIdxOfQp(qp)].dev->TriggerTransmit();
+    }
+    return qp;
+}
+
+void RdmaHw::SealPersistentQueuePair(uint32_t dip, uint16_t sport, uint16_t dport,
+                                     uint16_t pg, uint64_t expected_wqes) {
+    Ptr<RdmaQueuePair> qp = GetQp(GetQpKey(dip, sport, dport, pg));
+    NS_ASSERT_MSG(qp != NULL && qp->m_persistent, "cannot seal a missing persistent QP");
+    NS_ASSERT_MSG(!qp->m_pool_sealed, "persistent QP sealed more than once");
+    NS_ASSERT_MSG(expected_wqes == qp->m_completed_wqes + qp->m_wqe_boundaries.size(),
+                  "persistent QP expected WQE count does not match committed WQEs");
+    qp->m_expected_wqes = expected_wqes;
+    qp->m_pool_sealed = true;
+    if (qp->IsPersistentIdle() && qp->m_completed_wqes == qp->m_expected_wqes) {
+        QpComplete(qp);
+    }
 }
 
 void RdmaHw::DeleteQueuePair(Ptr<RdmaQueuePair> qp) {
@@ -518,7 +594,16 @@ int RdmaHw::ReceiveAck(Ptr<Packet> p, CustomHeader &ch) {
                 qp->snd_nxt = qp->snd_una;
             }
         }
-        if (qp->IsFinished()) {
+        if (qp->m_persistent && m_persistentPacketEvents &&
+            !m_persistentQpEventCallback.IsNull()) {
+            m_persistentQpEventCallback(qp, PERSISTENT_QP_ACK);
+        }
+        if (qp->m_persistent) {
+            CompletePersistentWqes(qp);
+            if (qp->IsPersistentIdle() && qp->m_retransmit.IsRunning()) {
+                qp->m_retransmit.Cancel();
+            }
+        } else if (qp->IsFinished()) {
             QpComplete(qp);
         }
     }
@@ -571,6 +656,11 @@ int RdmaHw::ReceiveAck(Ptr<Packet> p, CustomHeader &ch) {
     }
     // ACK may advance the on-the-fly window, allowing more packets to send
     dev->TriggerTransmit();
+    if (qp->m_persistent && qp->m_pool_sealed && qp->IsPersistentIdle() &&
+        qp->m_completed_wqes == qp->m_expected_wqes) {
+        // Teardown after all final-ACK CC processing so no timer is re-created after QpComplete.
+        QpComplete(qp);
+    }
     return 0;
 }
 
@@ -721,6 +811,22 @@ uint16_t RdmaHw::EtherToPpp(uint16_t proto) {
 
 void RdmaHw::RecoverQueue(Ptr<RdmaQueuePair> qp) { qp->snd_nxt = qp->snd_una; }
 
+void RdmaHw::CompletePersistentWqes(Ptr<RdmaQueuePair> qp) {
+    NS_ASSERT_MSG(qp->m_persistent, "WQE completion requires a persistent QP");
+    while (qp->HasCompletedWqe()) {
+        RdmaQueuePair::WqeBoundary boundary = qp->PopCompletedWqe();
+        if (!m_wqeEventCallback.IsNull()) {
+            m_wqeEventCallback(qp, WQE_COMPLETE, boundary);
+        }
+    }
+    if (qp->IsPersistentIdle() && !qp->m_idle_reported) {
+        qp->m_idle_reported = true;
+        if (!m_persistentQpEventCallback.IsNull()) {
+            m_persistentQpEventCallback(qp, PERSISTENT_QP_IDLE);
+        }
+    }
+}
+
 void RdmaHw::QpComplete(Ptr<RdmaQueuePair> qp) {
     NS_ASSERT(!m_qpCompleteCallback.IsNull());
     if (m_cc_mode == 1) {
@@ -730,7 +836,10 @@ void RdmaHw::QpComplete(Ptr<RdmaQueuePair> qp) {
     }
     if (qp->m_retransmit.IsRunning()) qp->m_retransmit.Cancel();
 
-    // This callback will log info. It also calls deletetion the rxQp on the receiver
+    if (qp->m_persistent && !m_persistentQpEventCallback.IsNull()) {
+        m_persistentQpEventCallback(qp, PERSISTENT_QP_TEARDOWN);
+    }
+    // This callback will log info. It also calls deletion of the rxQp on the receiver.
     m_qpCompleteCallback(qp);
     // delete TxQueuePair
     DeleteQueuePair(qp);
@@ -766,6 +875,13 @@ void RdmaHw::RedistributeQp() {
 
 Ptr<Packet> RdmaHw::GetNxtPacket(Ptr<RdmaQueuePair> qp) {
     uint32_t payload_size = qp->GetBytesLeft();
+    const RdmaQueuePair::WqeBoundary* packet_wqe = nullptr;
+    if (qp->m_persistent) {
+        packet_wqe = qp->GetWqeForSequence(qp->snd_nxt);
+        NS_ASSERT_MSG(packet_wqe != nullptr, "persistent QP has bytes without a WQE boundary");
+        payload_size = std::min<uint64_t>(
+            payload_size, packet_wqe->cumulative_end_seq - qp->snd_nxt);
+    }
     if (m_mtu < payload_size) {  // possibly last packet
         payload_size = m_mtu;
     }
@@ -805,18 +921,20 @@ Ptr<Packet> RdmaHw::GetNxtPacket(Ptr<RdmaQueuePair> qp) {
     {
         FlowIDNUMTag fint;
         if (!p->PeekPacketTag(fint)) {
-            fint.SetId(qp->m_flow_id);
-            fint.SetFlowSize(qp->m_size);
+            fint.SetId(packet_wqe ? static_cast<int32_t>(packet_wqe->app_id) : qp->m_flow_id);
+            fint.SetFlowSize(packet_wqe ? packet_wqe->bytes : qp->m_size);
             p->AddPacketTag(fint);
         }
         FlowStatTag fst;
-        uint64_t size = qp->m_size;
+        uint64_t size = packet_wqe ? packet_wqe->bytes : qp->m_size;
+        uint64_t wqe_start = packet_wqe ? packet_wqe->cumulative_end_seq - packet_wqe->bytes : 0;
+        uint64_t wqe_end = packet_wqe ? packet_wqe->cumulative_end_seq : qp->m_size;
         if (!p->PeekPacketTag(fst)) {
-            if (size < m_mtu && qp->snd_nxt + payload_size >= qp->m_size) {
+            if (size < m_mtu && qp->snd_nxt + payload_size >= wqe_end) {
                 fst.SetType(FlowStatTag::FLOW_START_AND_END);
-            } else if (qp->snd_nxt + payload_size >= qp->m_size) {
+            } else if (qp->snd_nxt + payload_size >= wqe_end) {
                 fst.SetType(FlowStatTag::FLOW_END);
-            } else if (qp->snd_nxt == 0) {
+            } else if (qp->snd_nxt == wqe_start) {
                 fst.SetType(FlowStatTag::FLOW_START);
             } else {
                 fst.SetType(FlowStatTag::FLOW_NOTEND);
@@ -833,6 +951,11 @@ Ptr<Packet> RdmaHw::GetNxtPacket(Ptr<RdmaQueuePair> qp) {
 
     // // update state
     if (proceed_snd_nxt) qp->snd_nxt += payload_size;
+
+    if (qp->m_persistent && m_persistentPacketEvents &&
+        !m_persistentQpEventCallback.IsNull()) {
+        m_persistentQpEventCallback(qp, PERSISTENT_QP_PACKET);
+    }
 
     qp->m_ipid++;
 

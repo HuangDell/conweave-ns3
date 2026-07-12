@@ -89,6 +89,9 @@ void InstallRdmaHosts(const ExperimentConfig& config, SimulationState& state, ui
         hardware->SetAttribute("IrnRtoHigh", TimeValue(MicroSeconds(320)));
         hardware->SetAttribute("IrnRtoLow", TimeValue(MicroSeconds(100)));
         hardware->SetAttribute("IrnBdp", UintegerValue(irn_bdp));
+        hardware->m_persistentPacketEvents =
+            config.traffic.v5_qp_pool && config.traffic.v5_qp_state_log &&
+            config.traffic.v5_qp_pool_size == 1 && config.traffic.v5_chunk_bytes == 0;
 
         if (config.cc.mode == 1) {
             monitor.StartCnpMonitoring(hardware);

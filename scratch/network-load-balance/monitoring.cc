@@ -29,8 +29,28 @@ bool SimulationMonitor::OpenCoreOutputs() {
     if (config_.cc.mode == 1) {
         cnp_output_ = fopen(config_.io.cnp_output_file.c_str(), "w");
     }
+    if (config_.traffic.v5_qp_pool && config_.traffic.v5_wqe_log) {
+        v5_wqe_output_ = fopen(config_.io.v5_wqe_output_file.c_str(), "w");
+        if (v5_wqe_output_) {
+            fprintf(v5_wqe_output_,
+                    "time_ns,event,app_id,chunk_id,qp_key,lane,bytes,commit_time_ns,"
+                    "complete_time_ns,cumulative_end_seq,snd_nxt,snd_una\n");
+        }
+    }
+    if (config_.traffic.v5_qp_pool && config_.traffic.v5_qp_state_log) {
+        v5_qp_state_output_ = fopen(config_.io.v5_qp_state_output_file.c_str(), "w");
+        if (v5_qp_state_output_) {
+            fprintf(v5_qp_state_output_,
+                    "time_ns,event,qp_key,src,dst,pg,lane,sport,dport,snd_nxt,snd_una,"
+                    "receiver_next_expected_seq,dcqcn_rate_bps,dcqcn_target_rate_bps,"
+                    "dcqcn_alpha,completed_wqes,expected_wqes\n");
+        }
+    }
     return pfc_output_ && fct_output_ && flow_input_output_ &&
-           (config_.cc.mode != 1 || cnp_output_);
+           (config_.cc.mode != 1 || cnp_output_) &&
+           (!config_.traffic.v5_qp_pool || !config_.traffic.v5_wqe_log || v5_wqe_output_) &&
+           (!config_.traffic.v5_qp_pool || !config_.traffic.v5_qp_state_log ||
+            v5_qp_state_output_);
 }
 
 bool SimulationMonitor::OpenLateOutputs() {
@@ -84,6 +104,8 @@ void SimulationMonitor::CloseOutputs() {
     CloseFile(&path_delay_output_);
     CloseFile(&ooo_event_output_);
     CloseFile(&v5_chunk_output_);
+    CloseFile(&v5_wqe_output_);
+    CloseFile(&v5_qp_state_output_);
 }
 
 void SimulationMonitor::PfcTraceCallback(SimulationMonitor* monitor, Ptr<QbbNetDevice> device,
@@ -96,6 +118,18 @@ void SimulationMonitor::QpCompleteCallback(SimulationMonitor* monitor,
     monitor->RecordQpFinish(queue_pair);
 }
 
+void SimulationMonitor::PersistentQpEventCallback(SimulationMonitor* monitor,
+                                                   Ptr<RdmaQueuePair> queue_pair,
+                                                   uint32_t event) {
+    monitor->RecordPersistentQpEvent(queue_pair, event);
+}
+
+void SimulationMonitor::WqeEventCallback(SimulationMonitor* monitor,
+                                          Ptr<RdmaQueuePair> queue_pair, uint32_t event,
+                                          RdmaQueuePair::WqeBoundary boundary) {
+    monitor->RecordWqeEvent(queue_pair, event, boundary);
+}
+
 void SimulationMonitor::ConnectPfcTrace(Ptr<QbbNetDevice> device) {
     device->TraceConnectWithoutContext(
         "QbbPfc", MakeBoundCallback(&SimulationMonitor::PfcTraceCallback, this, device));
@@ -104,6 +138,11 @@ void SimulationMonitor::ConnectPfcTrace(Ptr<QbbNetDevice> device) {
 void SimulationMonitor::ConnectQpComplete(Ptr<RdmaDriver> driver) {
     driver->TraceConnectWithoutContext(
         "QpComplete", MakeBoundCallback(&SimulationMonitor::QpCompleteCallback, this));
+    driver->TraceConnectWithoutContext(
+        "PersistentQpEvent",
+        MakeBoundCallback(&SimulationMonitor::PersistentQpEventCallback, this));
+    driver->TraceConnectWithoutContext(
+        "WqeEvent", MakeBoundCallback(&SimulationMonitor::WqeEventCallback, this));
 }
 
 void SimulationMonitor::StartCnpMonitoring(Ptr<RdmaHw> hardware) {
@@ -139,6 +178,15 @@ void SimulationMonitor::RecordPfc(Ptr<QbbNetDevice> device, uint32_t type) {
 void SimulationMonitor::RecordQpFinish(Ptr<RdmaQueuePair> queue_pair) {
     uint32_t source_id = Settings::ip_to_node_id(queue_pair->sip);
     uint32_t destination_id = Settings::ip_to_node_id(queue_pair->dip);
+    Ptr<Node> destination = state_.nodes.Get(destination_id);
+    Ptr<RdmaDriver> rdma = destination->GetObject<RdmaDriver>();
+    rdma->m_rdma->DeleteRxQp(queue_pair->sip.Get(), queue_pair->sport, queue_pair->dport,
+                             queue_pair->m_pg);
+
+    if (queue_pair->m_persistent) {
+        return;
+    }
+
     uint64_t base_rtt = state_.pair_rtt[state_.nodes.Get(source_id)][state_.nodes.Get(destination_id)];
     uint64_t bandwidth = state_.pair_bw[state_.nodes.Get(source_id)][state_.nodes.Get(destination_id)];
     uint32_t total_bytes =
@@ -146,11 +194,6 @@ void SimulationMonitor::RecordQpFinish(Ptr<RdmaQueuePair> queue_pair) {
         ((queue_pair->m_size - 1) / config_.packet_payload_size + 1) *
             (CustomHeader::GetStaticWholeHeaderSize() - IntHeader::GetStaticSize());
     uint64_t standalone_fct = base_rtt + total_bytes * 8000000000lu / bandwidth;
-
-    Ptr<Node> destination = state_.nodes.Get(destination_id);
-    Ptr<RdmaDriver> rdma = destination->GetObject<RdmaDriver>();
-    rdma->m_rdma->DeleteRxQp(queue_pair->sip.Get(), queue_pair->sport, queue_pair->dport,
-                             queue_pair->m_pg);
 
     fprintf(fct_output_, "%u %u %u %u %lu %lu %lu %lu %d\n", source_id, destination_id,
             queue_pair->sport, queue_pair->dport, queue_pair->m_size,
@@ -161,6 +204,81 @@ void SimulationMonitor::RecordQpFinish(Ptr<RdmaQueuePair> queue_pair) {
                  (source_id, destination_id, queue_pair->sport, queue_pair->dport,
                   queue_pair->m_size, queue_pair->startTime.GetTimeStep(),
                   (Simulator::Now() - queue_pair->startTime).GetTimeStep(), standalone_fct));
+    Settings::cnt_finished_flows++;
+    fflush(fct_output_);
+}
+
+void SimulationMonitor::RecordPersistentQpEvent(Ptr<RdmaQueuePair> queue_pair, uint32_t event) {
+    static const char* names[] = {"create", "wake", "idle", "teardown", "packet", "ack"};
+    NS_ASSERT_MSG(event <= RdmaHw::PERSISTENT_QP_ACK,
+                  "unknown persistent QP lifecycle event");
+    RecordQpState(queue_pair, names[event]);
+}
+
+void SimulationMonitor::RecordQpState(Ptr<RdmaQueuePair> queue_pair, const char* event) {
+    if (!v5_qp_state_output_) {
+        return;
+    }
+    uint32_t source_id = Settings::ip_to_node_id(queue_pair->sip);
+    uint32_t destination_id = Settings::ip_to_node_id(queue_pair->dip);
+    uint32_t receiver_expected = 0;
+    Ptr<RdmaDriver> destination = state_.nodes.Get(destination_id)->GetObject<RdmaDriver>();
+    Ptr<RdmaRxQueuePair> rx_qp = destination->m_rdma->GetRxQp(
+        queue_pair->dip.Get(), queue_pair->sip.Get(), queue_pair->dport, queue_pair->sport,
+        queue_pair->m_pg, false);
+    if (rx_qp) {
+        receiver_expected = rx_qp->ReceiverNextExpectedSeq;
+    }
+    uint64_t qp_key = RdmaHw::GetQpKey(queue_pair->dip.Get(), queue_pair->sport,
+                                      queue_pair->dport, queue_pair->m_pg);
+    fprintf(v5_qp_state_output_,
+            "%lu,%s,%lu,%u,%u,%u,%u,%u,%u,%lu,%lu,%u,%lu,%lu,%.17g,%lu,%lu\n",
+            Simulator::Now().GetNanoSeconds(), event, qp_key, source_id, destination_id,
+            queue_pair->m_pg, queue_pair->m_v5_lane, queue_pair->sport, queue_pair->dport,
+            queue_pair->snd_nxt, queue_pair->snd_una, receiver_expected,
+            queue_pair->m_rate.GetBitRate(), queue_pair->mlx.m_targetRate.GetBitRate(),
+            queue_pair->mlx.m_alpha, queue_pair->m_completed_wqes,
+            queue_pair->m_expected_wqes);
+    fflush(v5_qp_state_output_);
+}
+
+void SimulationMonitor::RecordWqeEvent(Ptr<RdmaQueuePair> queue_pair, uint32_t event,
+                                       RdmaQueuePair::WqeBoundary boundary) {
+    NS_ASSERT_MSG(event == RdmaHw::WQE_COMMIT || event == RdmaHw::WQE_COMPLETE,
+                  "unknown persistent WQE event");
+    uint64_t qp_key = RdmaHw::GetQpKey(queue_pair->dip.Get(), queue_pair->sport,
+                                      queue_pair->dport, queue_pair->m_pg);
+    uint64_t complete_time = event == RdmaHw::WQE_COMPLETE
+                                 ? Simulator::Now().GetNanoSeconds()
+                                 : 0;
+    if (v5_wqe_output_) {
+        fprintf(v5_wqe_output_, "%lu,%s,%u,%u,%lu,%u,%lu,%lu,%lu,%lu,%lu,%lu\n",
+                Simulator::Now().GetNanoSeconds(),
+                event == RdmaHw::WQE_COMMIT ? "commit" : "complete", boundary.app_id,
+                boundary.chunk_id, qp_key, queue_pair->m_v5_lane, boundary.bytes,
+                boundary.commit_time.GetNanoSeconds(), complete_time,
+                boundary.cumulative_end_seq, queue_pair->snd_nxt, queue_pair->snd_una);
+        fflush(v5_wqe_output_);
+    }
+    RecordQpState(queue_pair, event == RdmaHw::WQE_COMMIT ? "wqe_commit" : "wqe_complete");
+    if (event != RdmaHw::WQE_COMPLETE) {
+        return;
+    }
+
+    uint32_t source_id = Settings::ip_to_node_id(queue_pair->sip);
+    uint32_t destination_id = Settings::ip_to_node_id(queue_pair->dip);
+    uint64_t base_rtt = state_.pair_rtt[state_.nodes.Get(source_id)][state_.nodes.Get(destination_id)];
+    uint64_t bandwidth = state_.pair_bw[state_.nodes.Get(source_id)][state_.nodes.Get(destination_id)];
+    uint64_t total_bytes =
+        boundary.bytes +
+        ((boundary.bytes - 1) / config_.packet_payload_size + 1) *
+            (CustomHeader::GetStaticWholeHeaderSize() - IntHeader::GetStaticSize());
+    uint64_t standalone_fct = base_rtt + total_bytes * 8000000000lu / bandwidth;
+    fprintf(fct_output_, "%u %u %u %u %lu %lu %lu %lu %u\n", source_id, destination_id,
+            queue_pair->sport, queue_pair->dport, boundary.bytes,
+            boundary.commit_time.GetTimeStep(),
+            (Simulator::Now() - boundary.commit_time).GetTimeStep(), standalone_fct,
+            boundary.app_id);
     Settings::cnt_finished_flows++;
     fflush(fct_output_);
 }

@@ -11,6 +11,7 @@
 #include <ns3/selective-packet-queue.h>
 
 #include <climits> /* for CHAR_BIT */
+#include <deque>
 #include <vector>
 
 #define BITMASK(b) (1 << ((b) % CHAR_BIT))
@@ -53,6 +54,14 @@ class IrnSackManager {
 
 class RdmaQueuePair : public Object {
    public:
+    struct WqeBoundary {
+        uint32_t app_id;
+        uint32_t chunk_id;
+        uint64_t bytes;
+        Time commit_time;
+        uint64_t cumulative_end_seq;
+    };
+
     Time startTime;
     Ipv4Address sip, dip;
     uint16_t sport, dport;
@@ -69,6 +78,16 @@ class RdmaQueuePair : public Object {
     uint32_t lastPktSize;
     int32_t m_flow_id;
     Time m_timeout;
+
+    // v5 persistent-QP state. Legacy QPs leave m_persistent false and follow the
+    // original one-completion/one-teardown path unchanged.
+    bool m_persistent;
+    bool m_pool_sealed;
+    bool m_idle_reported;
+    uint32_t m_v5_lane;
+    uint64_t m_expected_wqes;
+    uint64_t m_completed_wqes;
+    std::deque<WqeBoundary> m_wqe_boundaries;
 
     /******************************
      * runtime states
@@ -149,6 +168,12 @@ class RdmaQueuePair : public Object {
     void SetVarWin(bool v);
     void SetFlowId(int32_t v);
     void SetTimeout(Time v);
+    WqeBoundary AppendWqe(uint32_t app_id, uint32_t chunk_id, uint64_t bytes,
+                          Time commit_time);
+    bool HasCompletedWqe() const;
+    WqeBoundary PopCompletedWqe();
+    const WqeBoundary* GetWqeForSequence(uint64_t sequence) const;
+    bool IsPersistentIdle() const;
 
     uint64_t GetBytesLeft();
     uint32_t GetHash(void);
@@ -236,6 +261,13 @@ class RdmaQueuePairGroup : public Object {
         if (__glibc_unlikely(idx >= ESTIMATED_MAX_FLOW_PER_HOST)) return;
         BITSET(m_qp_finished, idx);
     }
+
+    inline void ClearQpFinished(uint32_t idx) {
+        if (__glibc_unlikely(idx >= ESTIMATED_MAX_FLOW_PER_HOST)) return;
+        BITCLEAR(m_qp_finished, idx);
+    }
+
+    void ClearQpFinished(Ptr<RdmaQueuePair> qp);
 };
 
 }  // namespace ns3

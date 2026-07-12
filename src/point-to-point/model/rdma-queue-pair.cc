@@ -8,6 +8,8 @@
 #include <ns3/udp-header.h>
 #include <ns3/uinteger.h>
 
+#include <limits>
+
 #include "ns3/ppp-header.h"
 #include "ns3/settings.h"
 #include "rdma-hw.h"
@@ -74,6 +76,12 @@ RdmaQueuePair::RdmaQueuePair(uint16_t pg, Ipv4Address _sip, Ipv4Address _dip, ui
     irn.m_recovery = false;
 
     m_timeout = MilliSeconds(4);
+    m_persistent = false;
+    m_pool_sealed = false;
+    m_idle_reported = false;
+    m_v5_lane = 0;
+    m_expected_wqes = 0;
+    m_completed_wqes = 0;
 }
 
 void RdmaQueuePair::SetSize(uint64_t size) { m_size = size; }
@@ -90,6 +98,45 @@ void RdmaQueuePair::SetFlowId(int32_t v) {
 }
 
 void RdmaQueuePair::SetTimeout(Time v) { m_timeout = v; }
+
+RdmaQueuePair::WqeBoundary RdmaQueuePair::AppendWqe(uint32_t app_id, uint32_t chunk_id,
+                                                    uint64_t bytes, Time commit_time) {
+    NS_ASSERT_MSG(m_persistent, "AppendWqe requires a persistent QP");
+    NS_ASSERT_MSG(bytes > 0, "zero-byte WQE is not supported");
+    NS_ASSERT_MSG(m_size <= std::numeric_limits<uint64_t>::max() - bytes,
+                  "persistent QP sequence space overflow");
+    WqeBoundary boundary = {app_id, chunk_id, bytes, commit_time, m_size + bytes};
+    m_size = boundary.cumulative_end_seq;
+    m_wqe_boundaries.push_back(boundary);
+    m_idle_reported = false;
+    return boundary;
+}
+
+bool RdmaQueuePair::HasCompletedWqe() const {
+    return !m_wqe_boundaries.empty() &&
+           snd_una >= m_wqe_boundaries.front().cumulative_end_seq;
+}
+
+RdmaQueuePair::WqeBoundary RdmaQueuePair::PopCompletedWqe() {
+    NS_ASSERT_MSG(HasCompletedWqe(), "front WQE has not completed");
+    WqeBoundary boundary = m_wqe_boundaries.front();
+    m_wqe_boundaries.pop_front();
+    ++m_completed_wqes;
+    return boundary;
+}
+
+const RdmaQueuePair::WqeBoundary* RdmaQueuePair::GetWqeForSequence(uint64_t sequence) const {
+    for (const auto& boundary : m_wqe_boundaries) {
+        if (sequence < boundary.cumulative_end_seq) {
+            return &boundary;
+        }
+    }
+    return nullptr;
+}
+
+bool RdmaQueuePair::IsPersistentIdle() const {
+    return m_persistent && m_wqe_boundaries.empty() && snd_una >= m_size;
+}
 
 uint64_t RdmaQueuePair::GetBytesLeft() {
     if (irn.m_enabled) {
@@ -223,6 +270,16 @@ Ptr<RdmaQueuePair> RdmaQueuePairGroup::Get(uint32_t idx) { return m_qps[idx]; }
 Ptr<RdmaQueuePair> RdmaQueuePairGroup::operator[](uint32_t idx) { return m_qps[idx]; }
 
 void RdmaQueuePairGroup::AddQp(Ptr<RdmaQueuePair> qp) { m_qps.push_back(qp); }
+
+void RdmaQueuePairGroup::ClearQpFinished(Ptr<RdmaQueuePair> qp) {
+    for (uint32_t i = 0; i < m_qps.size(); ++i) {
+        if (m_qps[i] == qp) {
+            ClearQpFinished(i);
+            return;
+        }
+    }
+    NS_ASSERT_MSG(false, "persistent QP is not registered with its NIC queue group");
+}
 
 // void RdmaQueuePairGroup::AddRxQp(Ptr<RdmaRxQueuePair> rxQp){
 // 	m_rxQps.push_back(rxQp);

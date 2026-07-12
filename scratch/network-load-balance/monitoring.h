@@ -35,8 +35,18 @@ class SimulationMonitor {
                                  ns3::Ptr<ns3::QbbNetDevice> device, uint32_t type);
     static void QpCompleteCallback(SimulationMonitor* monitor,
                                    ns3::Ptr<ns3::RdmaQueuePair> queue_pair);
+    static void PersistentQpEventCallback(SimulationMonitor* monitor,
+                                          ns3::Ptr<ns3::RdmaQueuePair> queue_pair,
+                                          uint32_t event);
+    static void WqeEventCallback(SimulationMonitor* monitor,
+                                 ns3::Ptr<ns3::RdmaQueuePair> queue_pair, uint32_t event,
+                                 ns3::RdmaQueuePair::WqeBoundary boundary);
     void RecordPfc(ns3::Ptr<ns3::QbbNetDevice> device, uint32_t type);
     void RecordQpFinish(ns3::Ptr<ns3::RdmaQueuePair> queue_pair);
+    void RecordPersistentQpEvent(ns3::Ptr<ns3::RdmaQueuePair> queue_pair, uint32_t event);
+    void RecordQpState(ns3::Ptr<ns3::RdmaQueuePair> queue_pair, const char* event);
+    void RecordWqeEvent(ns3::Ptr<ns3::RdmaQueuePair> queue_pair, uint32_t event,
+                        ns3::RdmaQueuePair::WqeBoundary boundary);
     void MonitorCnp(ns3::Ptr<ns3::RdmaHw> hardware);
     void MonitorPeriodic();
     void MonitorCompletion();
@@ -64,6 +74,8 @@ class SimulationMonitor {
     FILE* path_delay_output_ = NULL;
     FILE* ooo_event_output_ = NULL;
     FILE* v5_chunk_output_ = NULL;
+    FILE* v5_wqe_output_ = NULL;
+    FILE* v5_qp_state_output_ = NULL;
 };
 
 }  // namespace nlb

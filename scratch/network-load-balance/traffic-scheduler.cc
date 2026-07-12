@@ -7,6 +7,7 @@
 #include <ns3/qbb-net-device.h>
 #include <ns3/rdma-client-helper.h>
 #include <ns3/rdma-client.h>
+#include <ns3/rdma-driver.h>
 #include <ns3/settings.h>
 
 #include <algorithm>
@@ -39,7 +40,7 @@ bool TrafficScheduler::LoadFlowFile() {
         return false;
     }
     target_completion_count_ = CalculateTargetCompletionCount();
-    if (config_.traffic.v5_nsub > 1) {
+    if (config_.traffic.v5_nsub > 1 || PersistentPoolEnabled()) {
         std::cerr << "V5_TARGET_COMPLETION_COUNT\t\t" << target_completion_count_ << "\n";
     }
     return true;
@@ -54,6 +55,10 @@ void TrafficScheduler::InitializePorts() {
     }
     LetflowRouting::ClearPinnedLanes();
     oracle_lane_bytes_.clear();
+    oracle_lane_deficits_.clear();
+    persistent_pool_.clear();
+    last_persistent_commit_time_ = 0.0;
+    persistent_pool_seal_scheduled_ = false;
 }
 
 void TrafficScheduler::Start() {
@@ -64,8 +69,17 @@ void TrafficScheduler::Start() {
     }
 }
 
+bool TrafficScheduler::PersistentPoolEnabled() const {
+    return config_.traffic.v5_qp_pool != 0;
+}
+
+uint32_t TrafficScheduler::LaneCount() const {
+    return PersistentPoolEnabled() ? config_.traffic.v5_qp_pool_size
+                                   : config_.traffic.v5_nsub;
+}
+
 bool TrafficScheduler::ChunkModeEnabled() const {
-    return config_.traffic.v5_chunk_bytes > 0 && config_.traffic.v5_nsub > 1;
+    return config_.traffic.v5_chunk_bytes > 0 && LaneCount() > 1;
 }
 
 uint64_t TrafficScheduler::ChunkCount(uint32_t bytes) const {
@@ -73,7 +87,7 @@ uint64_t TrafficScheduler::ChunkCount(uint32_t bytes) const {
         bytes = 1;
     }
     if (!ChunkModeEnabled()) {
-        return std::min<uint32_t>(config_.traffic.v5_nsub, bytes);
+        return std::min<uint32_t>(LaneCount(), bytes);
     }
     if (config_.traffic.v5_size_gate_bytes > 0 &&
         bytes < config_.traffic.v5_size_gate_bytes) {
@@ -83,7 +97,7 @@ uint64_t TrafficScheduler::ChunkCount(uint32_t bytes) const {
 }
 
 uint64_t TrafficScheduler::CalculateTargetCompletionCount() {
-    if (config_.traffic.v5_nsub <= 1) {
+    if (LaneCount() <= 1) {
         return flow_count_;
     }
     std::streampos first_flow_position = flow_file_.tellg();
@@ -204,8 +218,9 @@ uint32_t TrafficScheduler::SelectLane(uint32_t source, uint32_t destination, uin
     uint32_t source_tor = Settings::hostIp2SwitchId[state_.server_addresses[source].Get()];
     uint32_t destination_tor =
         Settings::hostIp2SwitchId[state_.server_addresses[destination].Get()];
-    std::vector<double> weights(config_.traffic.v5_nsub, 1.0);
-    if (has_bad_lane && bad_lane < config_.traffic.v5_nsub) {
+    uint32_t lane_count = LaneCount();
+    std::vector<double> weights(lane_count, 1.0);
+    if (has_bad_lane && bad_lane < lane_count) {
         if (policy == "proportional") {
             weights[bad_lane] = std::max(0.0, bad_fraction);
         } else if (policy == "avoid") {
@@ -216,15 +231,46 @@ uint32_t TrafficScheduler::SelectLane(uint32_t source, uint32_t destination, uin
     bool post_degrade =
         has_bad_lane && chunk_start_time >= degrade_time && policy != "uniform";
     uint64_t key = LaneCounterKey(source_tor, destination_tor, post_degrade);
+    if (PersistentPoolEnabled()) {
+        std::vector<double>& deficits = oracle_lane_deficits_[key];
+        if (deficits.size() != lane_count) {
+            deficits.assign(lane_count, 0.0);
+        }
+        double weight_sum = 0.0;
+        for (double weight : weights) {
+            weight_sum += weight;
+        }
+        NS_ASSERT_MSG(weight_sum > 0.0, "all persistent-pool lane weights are zero");
+        for (uint32_t lane = 0; lane < lane_count; ++lane) {
+            deficits[lane] += weights[lane] / weight_sum * chunk_size;
+        }
+        uint32_t best_lane = 0;
+        double best_deficit = -std::numeric_limits<double>::max();
+        double best_weight = -1.0;
+        for (uint32_t lane = 0; lane < lane_count; ++lane) {
+            if (weights[lane] <= 0.0) {
+                continue;
+            }
+            if (deficits[lane] > best_deficit ||
+                (deficits[lane] == best_deficit && weights[lane] > best_weight)) {
+                best_deficit = deficits[lane];
+                best_weight = weights[lane];
+                best_lane = lane;
+            }
+        }
+        deficits[best_lane] -= chunk_size;
+        return best_lane;
+    }
+
     std::vector<uint64_t>& assigned = oracle_lane_bytes_[key];
-    if (assigned.size() != config_.traffic.v5_nsub) {
-        assigned.assign(config_.traffic.v5_nsub, 0);
+    if (assigned.size() != lane_count) {
+        assigned.assign(lane_count, 0);
     }
 
     uint32_t best_lane = 0;
     double best_score = std::numeric_limits<double>::max();
     double best_weight = -1.0;
-    for (uint32_t lane = 0; lane < config_.traffic.v5_nsub; ++lane) {
+    for (uint32_t lane = 0; lane < lane_count; ++lane) {
         if (weights[lane] <= 0.0) {
             continue;
         }
@@ -245,10 +291,26 @@ void TrafficScheduler::InstallRdmaSubflow(uint32_t pg, uint32_t source, uint32_t
                                           const std::string& policy, bool is_bad_lane,
                                           bool has_bad_lane, uint32_t bad_lane,
                                           double bad_fraction, double degrade_time) {
-    uint32_t source_port = source_ports_[source]++;
-    uint32_t destination_port = destination_ports_[destination]++;
-    uint64_t qp_key = LetflowRouting::GetQpKey(state_.server_addresses[destination].Get(),
-                                               source_port, destination_port, pg);
+    uint64_t pool_key = 0;
+    uint32_t source_port = 0;
+    uint32_t destination_port = 0;
+    uint64_t qp_key = 0;
+    if (PersistentPoolEnabled()) {
+        NS_ASSERT_MSG(pin_lane, "persistent QP pool requires an explicitly pinned lane");
+        PersistentPoolEntry& entry =
+            GetPersistentPoolEntry(source, destination, pg, lane);
+        pool_key = PersistentPoolKey(source, destination, pg, lane);
+        source_port = entry.source_port;
+        destination_port = entry.destination_port;
+        qp_key = entry.qp_key;
+        ++entry.scheduled_wqes;
+        last_persistent_commit_time_ = std::max(last_persistent_commit_time_, start_time);
+    } else {
+        source_port = source_ports_[source]++;
+        destination_port = destination_ports_[destination]++;
+        qp_key = LetflowRouting::GetQpKey(state_.server_addresses[destination].Get(),
+                                          source_port, destination_port, pg);
+    }
 
     if (pin_lane) {
         LetflowRouting::RegisterPinnedLane(qp_key, lane);
@@ -265,7 +327,7 @@ void TrafficScheduler::InstallRdmaSubflow(uint32_t pg, uint32_t source, uint32_t
                                      : static_cast<uint32_t>(-1);
         std::ostringstream capacities;
         std::ostringstream weights;
-        for (uint32_t current_lane = 0; current_lane < config_.traffic.v5_nsub;
+        for (uint32_t current_lane = 0; current_lane < LaneCount();
              ++current_lane) {
             if (current_lane > 0) {
                 capacities << ';';
@@ -292,13 +354,28 @@ void TrafficScheduler::InstallRdmaSubflow(uint32_t pg, uint32_t source, uint32_t
             }
             weights << weight;
         }
+        std::ostringstream deficits;
+        if (PersistentPoolEnabled()) {
+            bool post_degrade = has_bad_lane && start_time >= degrade_time && policy != "uniform";
+            uint64_t deficit_key = LaneCounterKey(source_tor, destination_tor, post_degrade);
+            const auto& lane_deficits = oracle_lane_deficits_[deficit_key];
+            for (uint32_t current_lane = 0; current_lane < lane_deficits.size(); ++current_lane) {
+                if (current_lane > 0) {
+                    deficits << ';';
+                }
+                deficits << lane_deficits[current_lane];
+            }
+        } else {
+            deficits << "na";
+        }
         fprintf(chunk_output,
-                "%u %u %u %u %u %u %u %lu %u %s %u %u %lu %u %u %u %u %s %s na\n",
+                "%u %u %u %u %u %u %u %lu %u %s %u %u %lu %u %u %u %u %s %s %s\n",
                 flow_input_.idx,
                 chunk_id, source, destination, source_port, destination_port, bytes, start_ns,
                 pin_lane ? lane : static_cast<uint32_t>(-1), policy.c_str(),
                 is_bad_lane ? 1 : 0, has_bad_lane ? 1 : 0, qp_key, source_tor,
-                destination_tor, out_port, 0, capacities.str().c_str(), weights.str().c_str());
+                destination_tor, out_port, 0, capacities.str().c_str(), weights.str().c_str(),
+                deficits.str().c_str());
         fflush(chunk_output);
     }
 
@@ -310,22 +387,95 @@ void TrafficScheduler::InstallRdmaSubflow(uint32_t pg, uint32_t source, uint32_t
         assert(false);
     }
 
-    RdmaClientHelper client_helper(
-        pg, state_.server_addresses[source], state_.server_addresses[destination], source_port,
-        destination_port, bytes,
+    uint32_t window =
         config_.cc.has_win
             ? (config_.cc.global_t == 1
                    ? state_.max_bdp
                    : state_.pair_bdp[state_.nodes.Get(source)][state_.nodes.Get(destination)])
-            : 0,
+            : 0;
+    uint64_t base_rtt =
         config_.cc.global_t == 1
             ? state_.max_rtt
-            : state_.pair_rtt[state_.nodes.Get(source)][state_.nodes.Get(destination)]);
+            : state_.pair_rtt[state_.nodes.Get(source)][state_.nodes.Get(destination)];
+
+    if (PersistentPoolEnabled()) {
+        double start_delay = std::max(0.0, start_time - Simulator::Now().GetSeconds());
+        Simulator::Schedule(Seconds(start_delay), &TrafficScheduler::CommitPersistentWqe, this,
+                            pool_key, flow_input_.idx, chunk_id, bytes);
+        return;
+    }
+
+    RdmaClientHelper client_helper(
+        pg, state_.server_addresses[source], state_.server_addresses[destination], source_port,
+        destination_port, bytes, window, base_rtt);
     client_helper.SetAttribute("StatFlowID", IntegerValue(flow_input_.idx));
     ApplicationContainer applications = client_helper.Install(state_.nodes.Get(source));
     double start_delay = std::max(0.0, start_time - Simulator::Now().GetSeconds());
     applications.Start(Seconds(start_delay));
     applications.Stop(Seconds(100.0));
+}
+
+uint64_t TrafficScheduler::PersistentPoolKey(uint32_t source, uint32_t destination, uint32_t pg,
+                                              uint32_t lane) const {
+    NS_ASSERT_MSG(source <= 0xffff && destination <= 0xffff && pg <= 0xffff && lane <= 0xffff,
+                  "persistent pool key field overflow");
+    return (static_cast<uint64_t>(source) << 48) |
+           (static_cast<uint64_t>(destination) << 32) |
+           (static_cast<uint64_t>(pg) << 16) | lane;
+}
+
+TrafficScheduler::PersistentPoolEntry& TrafficScheduler::GetPersistentPoolEntry(
+    uint32_t source, uint32_t destination, uint32_t pg, uint32_t lane) {
+    uint64_t key = PersistentPoolKey(source, destination, pg, lane);
+    auto inserted = persistent_pool_.emplace(key, PersistentPoolEntry());
+    PersistentPoolEntry& entry = inserted.first->second;
+    if (inserted.second) {
+        entry.source = source;
+        entry.destination = destination;
+        entry.pg = static_cast<uint16_t>(pg);
+        entry.lane = lane;
+        entry.source_port = source_ports_[source]++;
+        entry.destination_port = destination_ports_[destination]++;
+        entry.qp_key = LetflowRouting::GetQpKey(
+            state_.server_addresses[destination].Get(), entry.source_port,
+            entry.destination_port, entry.pg);
+        LetflowRouting::RegisterPinnedLane(entry.qp_key, lane);
+    }
+    return entry;
+}
+
+void TrafficScheduler::CommitPersistentWqe(uint64_t pool_key, uint32_t app_id,
+                                           uint32_t chunk_id, uint32_t bytes) {
+    auto entry_iterator = persistent_pool_.find(pool_key);
+    NS_ASSERT_MSG(entry_iterator != persistent_pool_.end(), "unknown persistent pool entry");
+    const PersistentPoolEntry& entry = entry_iterator->second;
+    uint32_t source = entry.source;
+    uint32_t destination = entry.destination;
+    uint32_t window =
+        config_.cc.has_win
+            ? (config_.cc.global_t == 1
+                   ? state_.max_bdp
+                   : state_.pair_bdp[state_.nodes.Get(source)][state_.nodes.Get(destination)])
+            : 0;
+    uint64_t base_rtt =
+        config_.cc.global_t == 1
+            ? state_.max_rtt
+            : state_.pair_rtt[state_.nodes.Get(source)][state_.nodes.Get(destination)];
+    Ptr<RdmaDriver> driver = state_.nodes.Get(source)->GetObject<RdmaDriver>();
+    driver->AppendPersistentWqe(
+        entry.pg, state_.server_addresses[source], state_.server_addresses[destination],
+        entry.source_port, entry.destination_port, window, base_rtt,
+        static_cast<int32_t>(app_id), chunk_id, bytes, entry.lane);
+}
+
+void TrafficScheduler::SealPersistentPools() {
+    for (const auto& item : persistent_pool_) {
+        const PersistentPoolEntry& entry = item.second;
+        Ptr<RdmaDriver> driver = state_.nodes.Get(entry.source)->GetObject<RdmaDriver>();
+        driver->SealPersistentQueuePair(state_.server_addresses[entry.destination].Get(),
+                                        entry.source_port, entry.destination_port, entry.pg,
+                                        entry.scheduled_wqes);
+    }
 }
 
 void TrafficScheduler::ReadFlowInput() {
@@ -390,7 +540,7 @@ void TrafficScheduler::ScheduleFlowInputs() {
                 ++chunk_id;
             }
         } else {
-            uint32_t subflow_count = config_.traffic.v5_nsub < 1 ? 1 : config_.traffic.v5_nsub;
+            uint32_t subflow_count = LaneCount();
             if (subflow_count > target_length) {
                 subflow_count = target_length;
             }
@@ -399,7 +549,8 @@ void TrafficScheduler::ScheduleFlowInputs() {
             for (uint32_t i = 0; i < subflow_count; ++i) {
                 uint32_t subflow_length = base_length + (i == subflow_count - 1 ? remainder : 0);
                 InstallRdmaSubflow(priority_group, source, destination, subflow_length,
-                                   flow_input_.start_time, i, false, 0, "legacy", false, false,
+                                   flow_input_.start_time, i, PersistentPoolEnabled(), i,
+                                   PersistentPoolEnabled() ? "uniform" : "legacy", false, false,
                                    static_cast<uint32_t>(-1), 1.0,
                                    std::numeric_limits<double>::max());
             }
@@ -413,6 +564,13 @@ void TrafficScheduler::ScheduleFlowInputs() {
                             &TrafficScheduler::ScheduleFlowInputs, this);
     } else {
         flow_file_.close();
+        if (PersistentPoolEnabled() && !persistent_pool_seal_scheduled_) {
+            persistent_pool_seal_scheduled_ = true;
+            double seal_time = std::max(Simulator::Now().GetSeconds(),
+                                        last_persistent_commit_time_) + 1e-9;
+            Simulator::Schedule(Seconds(seal_time) - Simulator::Now(),
+                                &TrafficScheduler::SealPersistentPools, this);
+        }
     }
 }
 

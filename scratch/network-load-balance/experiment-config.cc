@@ -76,6 +76,18 @@ bool LoadExperimentConfig(const std::string& path, ExperimentConfig* config) {
         } else if (key == "V5_CHUNK_LOG") {
             conf >> config->traffic.v5_chunk_log;
             std::cerr << "V5_CHUNK_LOG\t\t\t" << config->traffic.v5_chunk_log << "\n";
+        } else if (key == "V5_QP_POOL") {
+            conf >> config->traffic.v5_qp_pool;
+            std::cerr << "V5_QP_POOL\t\t\t" << config->traffic.v5_qp_pool << "\n";
+        } else if (key == "V5_QP_POOL_SIZE") {
+            conf >> config->traffic.v5_qp_pool_size;
+            std::cerr << "V5_QP_POOL_SIZE\t\t" << config->traffic.v5_qp_pool_size << "\n";
+        } else if (key == "V5_WQE_LOG") {
+            conf >> config->traffic.v5_wqe_log;
+            std::cerr << "V5_WQE_LOG\t\t\t" << config->traffic.v5_wqe_log << "\n";
+        } else if (key == "V5_QP_STATE_LOG") {
+            conf >> config->traffic.v5_qp_state_log;
+            std::cerr << "V5_QP_STATE_LOG\t\t" << config->traffic.v5_qp_state_log << "\n";
         } else if (key == "FLOWLET_SWITCH_OUTPUT_FILE") {
             conf >> config->io.flowlet_switch_output_file;
             std::cerr << "FLOWLET_SWITCH_OUTPUT_FILE\t\t"
@@ -87,6 +99,13 @@ bool LoadExperimentConfig(const std::string& path, ExperimentConfig* config) {
         } else if (key == "V5_CHUNK_OUTPUT_FILE") {
             conf >> config->io.v5_chunk_output_file;
             std::cerr << "V5_CHUNK_OUTPUT_FILE\t\t" << config->io.v5_chunk_output_file << "\n";
+        } else if (key == "V5_WQE_OUTPUT_FILE") {
+            conf >> config->io.v5_wqe_output_file;
+            std::cerr << "V5_WQE_OUTPUT_FILE\t\t" << config->io.v5_wqe_output_file << "\n";
+        } else if (key == "V5_QP_STATE_OUTPUT_FILE") {
+            conf >> config->io.v5_qp_state_output_file;
+            std::cerr << "V5_QP_STATE_OUTPUT_FILE\t" << config->io.v5_qp_state_output_file
+                      << "\n";
         } else if (key == "CONWEAVE_TX_EXPIRY_TIME") {
             uint32_t value = 0;
             conf >> value;

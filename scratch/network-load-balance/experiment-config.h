@@ -58,6 +58,10 @@ struct TrafficConfig {
     uint32_t v5_oracle_bad_spine = 0;
     double v5_chunk_commit_rate_gbps = 100.0;
     uint32_t v5_chunk_log = 0;
+    uint32_t v5_qp_pool = 0;
+    uint32_t v5_qp_pool_size = 4;
+    uint32_t v5_wqe_log = 0;
+    uint32_t v5_qp_state_log = 0;
 };
 
 struct CongestionControlConfig {
@@ -125,6 +129,8 @@ struct IoConfig {
     std::string flowlet_switch_output_file = "flowlet_switch.txt";
     std::string ooo_event_output_file = "ooo_events.txt";
     std::string v5_chunk_output_file = "v5_chunk.txt";
+    std::string v5_wqe_output_file = "v5_wqe.txt";
+    std::string v5_qp_state_output_file = "v5_qp_state.txt";
 };
 
 struct LinkDegradeEvent {
