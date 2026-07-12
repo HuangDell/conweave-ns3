@@ -150,6 +150,7 @@ struct FailureConfig {
     uint64_t link_down_time_us = 0;
     uint32_t link_down_a = 0;
     uint32_t link_down_b = 0;
+    bool link_degrade_bidirectional = true;
     std::vector<LinkDegradeEvent> link_degrade_events;
 };
 

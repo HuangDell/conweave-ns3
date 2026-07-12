@@ -121,6 +121,7 @@ PACKET_PAYLOAD_SIZE 1000
 
 
 LINK_DOWN 0 0 0
+LINK_DEGRADE_DIRECTION {link_degrade_direction}
 LINK_DEGRADE {link_degrade}
 KMAX_MAP {kmax_map}
 KMIN_MAP {kmin_map}
@@ -360,6 +361,9 @@ def main():
                         help="link to degrade as 'A,B' node IDs, e.g. '128,136' (default: none)")
     parser.add_argument('--degrade_frac', dest='degrade_frac', action='store', type=float,
                         default=0.6, help="degraded effective-capacity fraction of nominal (default: 0.6)")
+    parser.add_argument('--degrade_direction', dest='degrade_direction', action='store',
+                        choices=('both', 'a-to-b'), default='both',
+                        help="degrade both directions or only A->B (default: both)")
     parser.add_argument('--degrade_mode', dest='degrade_mode', action='store', default='static',
                         help="static / flap (default: static)")
     parser.add_argument('--degrade_start_us', dest='degrade_start_us', action='store', type=int,
@@ -452,6 +456,7 @@ def main():
 
     # build LINK_DEGRADE event string (v4): "<n_events> [t_us A B frac]*"
     # times are us AFTER flowgen_start; static = 1 event, flap = alternating frac/hi events.
+    link_degrade_direction = args.degrade_direction.upper().replace('-', '_')
     link_degrade = "0"
     if args.degrade_link:
         A, B = [int(x) for x in args.degrade_link.split(",")]
@@ -722,6 +727,7 @@ def main():
                                         fast_react=fast_react, mi=mi, int_multi=int_multi, ewma_gain=ewma_gain,
                                         kmax_map=kmax_map, kmin_map=kmin_map, pmax_map=pmax_map,
                                         link_degrade=link_degrade,
+                                        link_degrade_direction=link_degrade_direction,
                                         letflow_flowlet_timeout_us=args.letflow_flowlet_timeout_us,
                                         sflowlet_weight_mode=sflowlet_weight_mode,
                                         sflowlet_est_time_us=args.sflowlet_est_time_us,
@@ -796,6 +802,7 @@ def main():
             "sflowlet_degrade_ratio": args.sflowlet_degrade_ratio,
             "sflowlet_backlog_thresh_bytes": args.sflowlet_backlog_thresh_bytes,
             "v5_estimator_stale_periods": args.v5_estimator_stale_periods,
+            "degrade_direction": args.degrade_direction,
             "link_degrade": link_degrade,
         },
     }

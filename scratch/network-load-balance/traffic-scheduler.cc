@@ -159,10 +159,13 @@ bool TrafficScheduler::GetBadLane(uint32_t source, uint32_t destination, uint32_
         Settings::hostIp2SwitchId[state_.server_addresses[destination].Get()];
     bool local_degrade = false;
     for (const auto& event : config_.failures.link_degrade_events) {
-        if ((event.node_a == source_tor &&
-             event.node_b == config_.traffic.v5_oracle_bad_spine) ||
-            (event.node_b == source_tor &&
-             event.node_a == config_.traffic.v5_oracle_bad_spine)) {
+        bool a_to_b_matches =
+            event.node_a == source_tor &&
+            event.node_b == config_.traffic.v5_oracle_bad_spine;
+        bool b_to_a_matches =
+            config_.failures.link_degrade_bidirectional && event.node_b == source_tor &&
+            event.node_a == config_.traffic.v5_oracle_bad_spine;
+        if (a_to_b_matches || b_to_a_matches) {
             local_degrade = true;
             *bad_fraction = event.fraction;
             *degrade_time = config_.flowgen_start_time + event.time_us / 1000000.0;
@@ -430,7 +433,10 @@ void TrafficScheduler::InstallRdmaSubflow(uint32_t app_id, uint32_t pg,
 
     FILE* chunk_output = monitor_.V5ChunkOutput();
     if (chunk_output) {
-        uint64_t start_ns = static_cast<uint64_t>(start_time * 1000000000.0);
+        // The decision executes at Simulator::Now(). Avoid converting the scheduling
+        // helper's double timestamp: values on an exact ns boundary can truncate 1ns
+        // early and falsely make an estimate version appear to come from the future.
+        uint64_t start_ns = Simulator::Now().GetNanoSeconds();
         uint32_t source_tor =
             Settings::hostIp2SwitchId[state_.server_addresses[source].Get()];
         uint32_t destination_tor =

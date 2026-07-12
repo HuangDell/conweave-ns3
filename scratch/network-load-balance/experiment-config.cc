@@ -308,6 +308,13 @@ bool LoadExperimentConfig(const std::string& path, ExperimentConfig* config) {
                 config->failures.link_down_b;
             std::cerr << "LINK_DOWN\t\t\t\t" << config->failures.link_down_time_us << ' '
                       << config->failures.link_down_a << ' ' << config->failures.link_down_b << '\n';
+        } else if (key == "LINK_DEGRADE_DIRECTION") {
+            std::string direction;
+            conf >> direction;
+            NS_ASSERT_MSG(direction == "BOTH" || direction == "A_TO_B",
+                          "LINK_DEGRADE_DIRECTION must be BOTH or A_TO_B");
+            config->failures.link_degrade_bidirectional = direction == "BOTH";
+            std::cerr << "LINK_DEGRADE_DIRECTION\t\t" << direction << '\n';
         } else if (key == "LINK_DEGRADE") {
             uint32_t event_count = 0;
             conf >> event_count;

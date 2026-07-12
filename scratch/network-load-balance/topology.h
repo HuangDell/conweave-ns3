@@ -22,7 +22,7 @@ class TopologyManager {
     void CalculateRoute(ns3::Ptr<ns3::Node> host);
     void SetRoutingEntries();
     void TakeDownLink(uint32_t node_a, uint32_t node_b);
-    void DegradeLink(uint32_t node_a, uint32_t node_b, double fraction);
+    void DegradeLink(uint32_t node_a, uint32_t node_b, double fraction, bool bidirectional);
     uint64_t AverageNicRate() const;
 
     const ExperimentConfig& config_;

@@ -371,7 +371,8 @@ void TopologyManager::TakeDownLink(uint32_t node_a, uint32_t node_b) {
     }
 }
 
-void TopologyManager::DegradeLink(uint32_t node_a, uint32_t node_b, double fraction) {
+void TopologyManager::DegradeLink(uint32_t node_a, uint32_t node_b, double fraction,
+                                  bool bidirectional) {
     Ptr<Node> a = state_.nodes.Get(node_a);
     Ptr<Node> b = state_.nodes.Get(node_b);
     if (state_.neighbor_interfaces.find(a) == state_.neighbor_interfaces.end() ||
@@ -379,15 +380,18 @@ void TopologyManager::DegradeLink(uint32_t node_a, uint32_t node_b, double fract
         return;
     }
     uint64_t nominal_a = state_.neighbor_interfaces[a][b].bw;
-    uint64_t nominal_b = state_.neighbor_interfaces[b][a].bw;
     Ptr<QbbNetDevice> device_a =
         DynamicCast<QbbNetDevice>(a->GetDevice(state_.neighbor_interfaces[a][b].idx));
-    Ptr<QbbNetDevice> device_b =
-        DynamicCast<QbbNetDevice>(b->GetDevice(state_.neighbor_interfaces[b][a].idx));
     device_a->SetDataRate(DataRate(static_cast<uint64_t>(nominal_a * fraction)));
-    device_b->SetDataRate(DataRate(static_cast<uint64_t>(nominal_b * fraction)));
-    std::cout << "*** LINK_DEGRADE @ " << Simulator::Now() << " : " << a->GetId() << "<->"
-              << b->GetId() << " frac=" << fraction << " (rate="
+    if (bidirectional) {
+        uint64_t nominal_b = state_.neighbor_interfaces[b][a].bw;
+        Ptr<QbbNetDevice> device_b =
+            DynamicCast<QbbNetDevice>(b->GetDevice(state_.neighbor_interfaces[b][a].idx));
+        device_b->SetDataRate(DataRate(static_cast<uint64_t>(nominal_b * fraction)));
+    }
+    std::cout << "*** LINK_DEGRADE @ " << Simulator::Now() << " : " << a->GetId()
+              << (bidirectional ? "<->" : "->") << b->GetId() << " frac=" << fraction
+              << " (rate="
               << static_cast<uint64_t>(nominal_a * fraction) << "bps)" << std::endl;
 }
 
@@ -401,7 +405,7 @@ void TopologyManager::ScheduleLinkEvents() {
     for (const auto& event : config_.failures.link_degrade_events) {
         Simulator::Schedule(Seconds(config_.flowgen_start_time) + MicroSeconds(event.time_us),
                             &TopologyManager::DegradeLink, this, event.node_a, event.node_b,
-                            event.fraction);
+                            event.fraction, config_.failures.link_degrade_bidirectional);
     }
 }
 
