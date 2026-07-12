@@ -367,9 +367,13 @@ uint32_t TrafficScheduler::SelectLane(uint32_t source, uint32_t destination,
     return best_lane;
 }
 
-void TrafficScheduler::ScheduleV5Chunk(uint32_t pg, uint32_t source,
-                                       uint32_t destination, uint32_t bytes,
-                                       uint32_t chunk_id) {
+void TrafficScheduler::ScheduleV5Chunk(ScheduledChunk chunk) {
+    uint32_t app_id = chunk.app_id;
+    uint32_t pg = chunk.pg;
+    uint32_t source = chunk.source;
+    uint32_t destination = chunk.destination;
+    uint32_t bytes = chunk.bytes;
+    uint32_t chunk_id = chunk.chunk_id;
     std::string policy = EffectivePolicy();
     bool oracle_policy = policy == "oracle-proportional" || policy == "oracle-avoid" ||
                          policy == "proportional" || policy == "avoid";
@@ -386,14 +390,16 @@ void TrafficScheduler::ScheduleV5Chunk(uint32_t pg, uint32_t source,
         source, destination, policy, has_bad_lane, bad_lane, bad_fraction,
         decision_time, degrade_time);
     uint32_t lane = SelectLane(source, destination, bytes, &current_decision_signal_);
-    InstallRdmaSubflow(pg, source, destination, bytes, decision_time, chunk_id, true,
-                       lane, policy, has_bad_lane && lane == bad_lane, has_bad_lane,
-                       bad_lane, bad_fraction, degrade_time);
+    InstallRdmaSubflow(app_id, pg, source, destination, bytes, decision_time,
+                       chunk_id, true, lane, policy,
+                       has_bad_lane && lane == bad_lane, has_bad_lane, bad_lane,
+                       bad_fraction, degrade_time);
 }
 
-void TrafficScheduler::InstallRdmaSubflow(uint32_t pg, uint32_t source, uint32_t destination,
-                                          uint32_t bytes, double start_time, uint32_t chunk_id,
-                                          bool pin_lane, uint32_t lane,
+void TrafficScheduler::InstallRdmaSubflow(uint32_t app_id, uint32_t pg,
+                                          uint32_t source, uint32_t destination,
+                                          uint32_t bytes, double start_time,
+                                          uint32_t chunk_id, bool pin_lane, uint32_t lane,
                                           const std::string& policy, bool is_bad_lane,
                                           bool has_bad_lane, uint32_t bad_lane,
                                           double bad_fraction, double degrade_time) {
@@ -455,8 +461,8 @@ void TrafficScheduler::InstallRdmaSubflow(uint32_t pg, uint32_t source, uint32_t
         }
         fprintf(chunk_output,
                 "%u %u %u %u %u %u %u %lu %u %s %u %u %lu %u %u %u %lu %s %s %s %lu\n",
-                flow_input_.idx,
-                chunk_id, source, destination, source_port, destination_port, bytes, start_ns,
+                app_id, chunk_id, source, destination, source_port, destination_port,
+                bytes, start_ns,
                 pin_lane ? lane : static_cast<uint32_t>(-1), policy.c_str(),
                 is_bad_lane ? 1 : 0, has_bad_lane ? 1 : 0,
                 PersistentPoolEnabled() ? pool_key : qp_key, source_tor,
@@ -488,14 +494,14 @@ void TrafficScheduler::InstallRdmaSubflow(uint32_t pg, uint32_t source, uint32_t
     if (PersistentPoolEnabled()) {
         double start_delay = std::max(0.0, start_time - Simulator::Now().GetSeconds());
         Simulator::Schedule(Seconds(start_delay), &TrafficScheduler::CommitPersistentWqe, this,
-                            pool_key, flow_input_.idx, chunk_id, bytes);
+                            pool_key, app_id, chunk_id, bytes);
         return;
     }
 
     RdmaClientHelper client_helper(
         pg, state_.server_addresses[source], state_.server_addresses[destination], source_port,
         destination_port, bytes, window, base_rtt);
-    client_helper.SetAttribute("StatFlowID", IntegerValue(flow_input_.idx));
+    client_helper.SetAttribute("StatFlowID", IntegerValue(app_id));
     ApplicationContainer applications = client_helper.Install(state_.nodes.Get(source));
     double start_delay = std::max(0.0, start_time - Simulator::Now().GetSeconds());
     applications.Start(Seconds(start_delay));
@@ -591,6 +597,7 @@ void TrafficScheduler::ScheduleFlowInputs() {
         uint32_t source = flow_input_.src;
         uint32_t destination = flow_input_.dst;
         uint32_t priority_group = flow_input_.pg;
+        uint32_t app_id = flow_input_.idx;
         assert(state_.nodes.Get(source)->GetNodeType() == 0 &&
                state_.nodes.Get(destination)->GetNodeType() == 0);
 
@@ -611,9 +618,10 @@ void TrafficScheduler::ScheduleFlowInputs() {
                 double chunk_start =
                     flow_input_.start_time + static_cast<double>(committed_bytes) / bytes_per_second;
                 double start_delay = std::max(0.0, chunk_start - Simulator::Now().GetSeconds());
+                ScheduledChunk scheduled_chunk = {
+                    app_id, priority_group, source, destination, chunk_length, chunk_id};
                 Simulator::Schedule(Seconds(start_delay), &TrafficScheduler::ScheduleV5Chunk,
-                                    this, priority_group, source, destination, chunk_length,
-                                    chunk_id);
+                                    this, scheduled_chunk);
                 last_persistent_commit_time_ =
                     std::max(last_persistent_commit_time_, chunk_start);
                 remaining -= chunk_length;
@@ -632,11 +640,12 @@ void TrafficScheduler::ScheduleFlowInputs() {
                 Simulator::Now().GetSeconds(), std::numeric_limits<double>::max());
             for (uint32_t i = 0; i < subflow_count; ++i) {
                 uint32_t subflow_length = base_length + (i == subflow_count - 1 ? remainder : 0);
-                InstallRdmaSubflow(priority_group, source, destination, subflow_length,
-                                   flow_input_.start_time, i, PersistentPoolEnabled(), i,
-                                   PersistentPoolEnabled() ? "uniform" : "legacy", false, false,
-                                   static_cast<uint32_t>(-1), 1.0,
-                                   std::numeric_limits<double>::max());
+                InstallRdmaSubflow(
+                    app_id, priority_group, source, destination, subflow_length,
+                    flow_input_.start_time, i, PersistentPoolEnabled(), i,
+                    PersistentPoolEnabled() ? "uniform" : "legacy", false, false,
+                    static_cast<uint32_t>(-1), 1.0,
+                    std::numeric_limits<double>::max());
             }
         }
         ++flow_input_.idx;

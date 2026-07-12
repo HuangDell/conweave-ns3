@@ -54,6 +54,15 @@ class TrafficScheduler {
         uint64_t estimate_age_ns = 0;
     };
 
+    struct ScheduledChunk {
+        uint32_t app_id;
+        uint32_t pg;
+        uint32_t source;
+        uint32_t destination;
+        uint32_t bytes;
+        uint32_t chunk_id;
+    };
+
     bool PersistentPoolEnabled() const;
     uint32_t LaneCount() const;
     bool ChunkModeEnabled() const;
@@ -71,10 +80,10 @@ class TrafficScheduler {
                                        double decision_time, double degrade_time);
     uint32_t SelectLane(uint32_t source, uint32_t destination, uint32_t chunk_size,
                         DecisionSignal* signal);
-    void ScheduleV5Chunk(uint32_t pg, uint32_t source, uint32_t destination,
-                         uint32_t bytes, uint32_t chunk_id);
-    void InstallRdmaSubflow(uint32_t pg, uint32_t source, uint32_t destination, uint32_t bytes,
-                            double start_time, uint32_t chunk_id, bool pin_lane, uint32_t lane,
+    void ScheduleV5Chunk(ScheduledChunk chunk);
+    void InstallRdmaSubflow(uint32_t app_id, uint32_t pg, uint32_t source,
+                            uint32_t destination, uint32_t bytes, double start_time,
+                            uint32_t chunk_id, bool pin_lane, uint32_t lane,
                             const std::string& policy, bool is_bad_lane, bool has_bad_lane,
                             uint32_t bad_lane, double bad_fraction, double degrade_time);
     uint64_t PersistentPoolKey(uint32_t source, uint32_t destination, uint32_t pg,
