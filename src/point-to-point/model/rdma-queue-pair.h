@@ -59,6 +59,7 @@ class RdmaQueuePair : public Object {
         uint32_t chunk_id;
         uint64_t bytes;
         Time commit_time;
+        Time service_start_time;
         uint64_t cumulative_end_seq;
     };
 
@@ -173,6 +174,7 @@ class RdmaQueuePair : public Object {
     bool HasCompletedWqe() const;
     WqeBoundary PopCompletedWqe();
     const WqeBoundary* GetWqeForSequence(uint64_t sequence) const;
+    void MarkWqeServiceStart(uint64_t sequence, Time service_start_time);
     bool IsPersistentIdle() const;
 
     uint64_t GetBytesLeft();

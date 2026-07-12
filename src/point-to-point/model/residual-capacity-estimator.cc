@@ -20,6 +20,7 @@ ResidualCapacityEstimator::ResidualCapacityEstimator() {
     m_backlogThreshBytes = 0;      // G1 gate: backlogged iff q_bytes > 0
     m_isToR = false;
     m_switch_id = (uint32_t)-1;
+    m_estimateVersion = 0;
 }
 
 ResidualCapacityEstimator::~ResidualCapacityEstimator() {}
@@ -47,6 +48,43 @@ bool ResidualCapacityEstimator::IsDegraded(uint32_t outPort) const {
     return it->second.degraded;
 }
 
+ResidualCapacityEstimator::PortSnapshot ResidualCapacityEstimator::GetSnapshot(
+    uint32_t outPort) const {
+    PortSnapshot snapshot;
+    snapshot.outPort = outPort;
+    auto it = m_portState.find(outPort);
+    if (it == m_portState.end()) {
+        return snapshot;
+    }
+    const PortState& st = it->second;
+    snapshot.nominalBps = st.nominalBps;
+    snapshot.rawCEffBps = st.rawBps;
+    snapshot.ewmaCEffBps = st.ewmaBps;
+    snapshot.sampleValid = st.sampleValid;
+    snapshot.deltaBusyNs = st.deltaBusyNs;
+    snapshot.deltaDepartedBytes = st.deltaDepartedBytes;
+    snapshot.queueBytes = st.queueBytes;
+    snapshot.lastValidTimeNs = st.lastValidTimeNs;
+    snapshot.sampleAgeNs = st.lastValidTimeNs == 0
+                               ? 0
+                               : Simulator::Now().GetNanoSeconds() - st.lastValidTimeNs;
+    snapshot.validSampleCount = st.validSampleCount;
+    snapshot.degradeRun = st.degradeRun;
+    snapshot.degradedState = st.degraded;
+    snapshot.estimateVersion = m_estimateVersion;
+    return snapshot;
+}
+
+std::vector<ResidualCapacityEstimator::PortSnapshot>
+ResidualCapacityEstimator::GetSnapshots() const {
+    std::vector<PortSnapshot> snapshots;
+    snapshots.reserve(m_portState.size());
+    for (const auto& item : m_portState) {
+        snapshots.push_back(GetSnapshot(item.first));
+    }
+    return snapshots;
+}
+
 void ResidualCapacityEstimator::SetConstants(Time estTime, double beta, uint32_t persistWindows,
                                              double degradeRatio, uint64_t backlogThreshBytes) {
     m_estTime = estTime;
@@ -71,6 +109,7 @@ void ResidualCapacityEstimator::Start() {
 void ResidualCapacityEstimator::Stop() { m_estEvent.Cancel(); }
 
 void ResidualCapacityEstimator::EstimatorEvent() {
+    bool batch_has_valid_update = false;
     for (auto &kv : m_devMap) {
         uint32_t outPort = kv.first;
         Ptr<QbbNetDevice> dev = kv.second;
@@ -85,6 +124,11 @@ void ResidualCapacityEstimator::EstimatorEvent() {
         uint64_t dBytes = departed - st.lastDepartedBytes;
         st.lastBusyNs = busyNs;
         st.lastDepartedBytes = departed;
+        st.deltaBusyNs = dBusy;
+        st.deltaDepartedBytes = dBytes;
+        st.queueBytes = qbytes;
+        st.sampleValid = false;
+        st.rawBps = 0.0;
 
         // Backlog gate (G1): only trust the drain-rate sample when the egress
         // queue was non-empty this window, i.e. the link is the bottleneck.
@@ -96,8 +140,13 @@ void ResidualCapacityEstimator::EstimatorEvent() {
         double cInst = static_cast<double>(dBytes) * 8.0 / (static_cast<double>(dBusy) * 1e-9);
 
         // EWMA on backlogged samples only.
+        st.rawBps = cInst;
         st.ewmaBps = (1.0 - m_beta) * st.ewmaBps + m_beta * cInst;
         st.initialized = true;
+        st.sampleValid = true;
+        st.lastValidTimeNs = Simulator::Now().GetNanoSeconds();
+        ++st.validSampleCount;
+        batch_has_valid_update = true;
 
         // Persistence filter: confirm degradation only after K consecutive
         // low windows, to drop transition-boundary mistakes (G1 classifier).
@@ -109,6 +158,12 @@ void ResidualCapacityEstimator::EstimatorEvent() {
             st.degradeRun = 0;
             st.degraded = false;
         }
+    }
+    if (batch_has_valid_update) {
+        ++m_estimateVersion;
+    }
+    if (!m_snapshotCallback.IsNull()) {
+        m_snapshotCallback(Simulator::Now().GetNanoSeconds(), m_switch_id, GetSnapshots());
     }
     m_estEvent = Simulator::Schedule(m_estTime, &ResidualCapacityEstimator::EstimatorEvent, this);
 }

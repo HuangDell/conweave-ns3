@@ -17,7 +17,9 @@
 
 #include <cstdint>
 #include <map>
+#include <vector>
 
+#include "ns3/callback.h"
 #include "ns3/event-id.h"
 #include "ns3/nstime.h"
 #include "ns3/ptr.h"
@@ -34,6 +36,26 @@ class QbbNetDevice;
  */
 class ResidualCapacityEstimator {
    public:
+    struct PortSnapshot {
+        uint32_t outPort = 0;
+        uint64_t nominalBps = 0;
+        double rawCEffBps = 0.0;
+        double ewmaCEffBps = 0.0;
+        bool sampleValid = false;
+        uint64_t deltaBusyNs = 0;
+        uint64_t deltaDepartedBytes = 0;
+        uint64_t queueBytes = 0;
+        uint64_t lastValidTimeNs = 0;
+        uint64_t sampleAgeNs = 0;
+        uint64_t validSampleCount = 0;
+        uint32_t degradeRun = 0;
+        bool degradedState = false;
+        uint64_t estimateVersion = 0;
+    };
+
+    typedef Callback<void, uint64_t, uint32_t, const std::vector<PortSnapshot>&>
+        SnapshotCallback;
+
     ResidualCapacityEstimator();
     // Out-of-line dtor: m_devMap holds Ptr<QbbNetDevice>, whose destruction needs
     // the complete type. Defined in the .cc (which includes qbb-net-device.h) so
@@ -54,6 +76,12 @@ class ResidualCapacityEstimator {
      * (passed the persistence filter). */
     bool IsDegraded(uint32_t outPort) const;
 
+    /** Coherent read-only state from the most recently published timer batch. */
+    PortSnapshot GetSnapshot(uint32_t outPort) const;
+    std::vector<PortSnapshot> GetSnapshots() const;
+    uint64_t GetEstimateVersion() const { return m_estimateVersion; }
+    void SetSnapshotCallback(SnapshotCallback callback) { m_snapshotCallback = callback; }
+
     void SetConstants(Time estTime, double beta, uint32_t persistWindows,
                       double degradeRatio, uint64_t backlogThreshBytes);
     void SetSwitchInfo(bool isToR, uint32_t switch_id);
@@ -69,7 +97,14 @@ class ResidualCapacityEstimator {
         uint64_t nominalBps = 0;
         uint64_t lastBusyNs = 0;
         uint64_t lastDepartedBytes = 0;
+        double rawBps = 0.0;
         double ewmaBps = 0.0;     // residual-capacity estimate (bps)
+        bool sampleValid = false;
+        uint64_t deltaBusyNs = 0;
+        uint64_t deltaDepartedBytes = 0;
+        uint64_t queueBytes = 0;
+        uint64_t lastValidTimeNs = 0;
+        uint64_t validSampleCount = 0;
         uint32_t degradeRun = 0;  // consecutive windows below degradeRatio*nominal
         bool degraded = false;    // persistence-filtered classification
         bool initialized = false;
@@ -85,6 +120,8 @@ class ResidualCapacityEstimator {
     uint64_t m_backlogThreshBytes; // backlog gate (G1: q_bytes > 0)
 
     EventId m_estEvent;
+    uint64_t m_estimateVersion;
+    SnapshotCallback m_snapshotCallback;
     bool m_isToR;
     uint32_t m_switch_id;
 };

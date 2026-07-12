@@ -49,7 +49,7 @@ bool SimulationMonitor::OpenCoreOutputs() {
         if (v5_wqe_output_) {
             fprintf(v5_wqe_output_,
                     "time_ns,event,app_id,chunk_id,qp_key,lane,bytes,commit_time_ns,"
-                    "complete_time_ns,cumulative_end_seq,snd_nxt,snd_una\n");
+                    "service_start_time_ns,complete_time_ns,cumulative_end_seq,snd_nxt,snd_una\n");
         }
     }
     if (config_.traffic.v5_qp_pool && config_.traffic.v5_qp_state_log) {
@@ -75,14 +75,24 @@ bool SimulationMonitor::OpenLateOutputs() {
     }
     if (config_.lb.mode == LbMode::kSflowlet) {
         CapacityProportionalRouting::s_enableSwitchLog = config_.lb.sflowlet_switch_log != 0;
-        if (config_.lb.sflowlet_ooo_log) {
-            ooo_event_output_ = fopen(config_.io.ooo_event_output_file.c_str(), "w");
-            RdmaHw::s_oooEventLog = ooo_event_output_;
-        }
+    }
+    if (config_.lb.sflowlet_ooo_log) {
+        ooo_event_output_ = fopen(config_.io.ooo_event_output_file.c_str(), "w");
+        RdmaHw::s_oooEventLog = ooo_event_output_;
     }
     if (config_.traffic.v5_chunk_log && config_.traffic.v5_chunk_bytes > 0 &&
         config_.traffic.v5_nsub > 1) {
         v5_chunk_output_ = fopen(config_.io.v5_chunk_output_file.c_str(), "w");
+    }
+    if (config_.traffic.v5_estimator_enable && config_.traffic.v5_estimator_log) {
+        v5_estimator_output_ = fopen(config_.io.v5_estimator_output_file.c_str(), "w");
+        if (v5_estimator_output_) {
+            fprintf(v5_estimator_output_,
+                    "time_ns,tor,dst_tor,lane,out_port,nominal_bps,true_rate_bps,"
+                    "delta_busy_ns,delta_departed_bytes,queue_bytes,sample_valid,"
+                    "raw_c_eff_bps,ewma_c_eff_bps,last_valid_time_ns,sample_age_ns,"
+                    "valid_sample_count,degrade_run,degraded_state,estimate_version\n");
+        }
     }
 
     uplink_output_ = fopen(config_.io.uplink_mon_file.c_str(), "w");
@@ -90,10 +100,11 @@ bool SimulationMonitor::OpenLateOutputs() {
     path_delay_output_ = fopen(config_.io.path_delay_mon_file.c_str(), "w");
 
     return (config_.lb.mode != LbMode::kConweave || (voq_output_ && voq_detail_output_)) &&
-           (!config_.lb.sflowlet_ooo_log || config_.lb.mode != LbMode::kSflowlet ||
-            ooo_event_output_) &&
+           (!config_.lb.sflowlet_ooo_log || ooo_event_output_) &&
            (!config_.traffic.v5_chunk_log || config_.traffic.v5_chunk_bytes == 0 ||
             config_.traffic.v5_nsub <= 1 || v5_chunk_output_) &&
+           (!config_.traffic.v5_estimator_enable || !config_.traffic.v5_estimator_log ||
+            v5_estimator_output_) &&
            uplink_output_ && conn_output_ && path_delay_output_;
 }
 
@@ -121,6 +132,62 @@ void SimulationMonitor::CloseOutputs() {
     CloseFile(&v5_chunk_output_);
     CloseFile(&v5_wqe_output_);
     CloseFile(&v5_qp_state_output_);
+    CloseFile(&v5_estimator_output_);
+}
+
+void SimulationMonitor::RecordEstimatorBatch(
+    uint64_t time_ns, uint32_t switch_id,
+    const std::vector<ResidualCapacityEstimator::PortSnapshot>& snapshots) {
+    if (!v5_estimator_output_ || switch_id >= state_.nodes.GetN()) {
+        return;
+    }
+    Ptr<SwitchNode> switch_node = DynamicCast<SwitchNode>(state_.nodes.Get(switch_id));
+    if (!switch_node || !switch_node->m_isToR) {
+        return;
+    }
+    for (const auto& snapshot : snapshots) {
+        Ptr<QbbNetDevice> device = snapshot.outPort < switch_node->GetNDevices()
+                                      ? DynamicCast<QbbNetDevice>(
+                                            switch_node->GetDevice(snapshot.outPort))
+                                      : NULL;
+        uint64_t true_rate_bps = device ? device->GetDataRate().GetBitRate() : 0;
+        bool emitted = false;
+        for (const auto& destination_paths :
+             switch_node->m_mmu->m_letflowRouting.m_letflowRoutingTable) {
+            uint32_t lane = 0;
+            for (const auto& path_id : destination_paths.second) {
+                if (LetflowRouting::GetOutPortFromPath(path_id, 0) == snapshot.outPort) {
+                    fprintf(v5_estimator_output_,
+                            "%lu,%u,%u,%u,%u,%lu,%lu,%lu,%lu,%lu,%u,%.17g,%.17g,"
+                            "%lu,%lu,%lu,%u,%u,%lu\n",
+                            time_ns, switch_id, destination_paths.first, lane,
+                            snapshot.outPort, snapshot.nominalBps, true_rate_bps,
+                            snapshot.deltaBusyNs, snapshot.deltaDepartedBytes,
+                            snapshot.queueBytes, snapshot.sampleValid ? 1 : 0,
+                            snapshot.rawCEffBps, snapshot.ewmaCEffBps,
+                            snapshot.lastValidTimeNs, snapshot.sampleAgeNs,
+                            snapshot.validSampleCount, snapshot.degradeRun,
+                            snapshot.degradedState ? 1 : 0, snapshot.estimateVersion);
+                    emitted = true;
+                }
+                ++lane;
+            }
+        }
+        if (!emitted) {
+            fprintf(v5_estimator_output_,
+                    "%lu,%u,%u,%u,%u,%lu,%lu,%lu,%lu,%lu,%u,%.17g,%.17g,"
+                    "%lu,%lu,%lu,%u,%u,%lu\n",
+                    time_ns, switch_id, static_cast<uint32_t>(-1),
+                    static_cast<uint32_t>(-1), snapshot.outPort, snapshot.nominalBps,
+                    true_rate_bps, snapshot.deltaBusyNs, snapshot.deltaDepartedBytes,
+                    snapshot.queueBytes, snapshot.sampleValid ? 1 : 0,
+                    snapshot.rawCEffBps, snapshot.ewmaCEffBps,
+                    snapshot.lastValidTimeNs, snapshot.sampleAgeNs,
+                    snapshot.validSampleCount, snapshot.degradeRun,
+                    snapshot.degradedState ? 1 : 0, snapshot.estimateVersion);
+        }
+    }
+    fflush(v5_estimator_output_);
 }
 
 void SimulationMonitor::PfcTraceCallback(SimulationMonitor* monitor, Ptr<QbbNetDevice> device,
@@ -265,11 +332,12 @@ void SimulationMonitor::RecordWqeEvent(Ptr<RdmaQueuePair> queue_pair, uint32_t e
                                  ? Simulator::Now().GetNanoSeconds()
                                  : 0;
     if (v5_wqe_output_) {
-        fprintf(v5_wqe_output_, "%lu,%s,%u,%u,%lu,%u,%lu,%lu,%lu,%lu,%lu,%lu\n",
+        fprintf(v5_wqe_output_, "%lu,%s,%u,%u,%lu,%u,%lu,%lu,%lu,%lu,%lu,%lu,%lu\n",
                 Simulator::Now().GetNanoSeconds(),
                 event == RdmaHw::WQE_COMMIT ? "commit" : "complete", boundary.app_id,
                 boundary.chunk_id, qp_key, queue_pair->m_v5_lane, boundary.bytes,
-                boundary.commit_time.GetNanoSeconds(), complete_time,
+                boundary.commit_time.GetNanoSeconds(),
+                boundary.service_start_time.GetNanoSeconds(), complete_time,
                 boundary.cumulative_end_seq, queue_pair->snd_nxt, queue_pair->snd_una);
         fflush(v5_wqe_output_);
     }
@@ -345,7 +413,8 @@ void SimulationMonitor::MonitorPeriodic() {
             uint64_t tx_busy_ns = device ? device->GetTxBusyTimeNs() : 0;
             uint64_t tx_departed = device ? device->GetTxDepartedBytes() : 0;
             uint64_t residual_bps =
-                config_.lb.mode == LbMode::kSflowlet
+                (config_.lb.mode == LbMode::kSflowlet ||
+                 config_.traffic.v5_estimator_enable)
                     ? switch_node->m_mmu->m_residualEstimator.GetResidualCapacity(interface)
                     : 0;
             fprintf(path_delay_output_, "%lu,%u,%u,%lu,%lu,%lu,%lu,%lu,%lu\n", now,
@@ -462,6 +531,8 @@ void SimulationMonitor::PrintLetflowHistory() {
     std::cout << "\n------------Letflow History---------------" << std::endl;
     std::cout << "Number of flowlet's timeout:" << LetflowRouting::nFlowletTimeout
               << "\nLetflow's timeout: " << config_.lb.letflow_flowlet_timeout << std::endl;
+    CloseFile(&ooo_event_output_);
+    RdmaHw::s_oooEventLog = NULL;
     CloseFile(&v5_chunk_output_);
 }
 

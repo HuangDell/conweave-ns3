@@ -46,22 +46,33 @@ class TrafficScheduler {
         uint64_t scheduled_wqes = 0;
     };
 
+    struct DecisionSignal {
+        std::vector<double> capacities_bps;
+        std::vector<double> weights;
+        std::vector<double> deficits;
+        uint64_t estimate_version = 0;
+        uint64_t estimate_age_ns = 0;
+    };
+
     bool PersistentPoolEnabled() const;
     uint32_t LaneCount() const;
     bool ChunkModeEnabled() const;
     uint64_t ChunkCount(uint32_t bytes) const;
     uint64_t CalculateTargetCompletionCount();
-    uint64_t LaneCounterKey(uint32_t source_tor, uint32_t destination_tor,
-                            bool post_degrade) const;
+    uint64_t LaneCounterKey(uint32_t source_tor, uint32_t destination_tor) const;
     uint32_t LaneOutPort(uint32_t source_tor, uint32_t destination_tor,
                          uint32_t lane) const;
     bool GetBadLane(uint32_t source, uint32_t destination, uint32_t* bad_lane,
                     double* bad_fraction, double* degrade_time);
-    std::string ActivePolicy(bool has_bad_lane, double chunk_start_time,
-                             double degrade_time) const;
+    std::string EffectivePolicy() const;
+    DecisionSignal BuildDecisionSignal(uint32_t source, uint32_t destination,
+                                       const std::string& policy, bool has_bad_lane,
+                                       uint32_t bad_lane, double bad_fraction,
+                                       double decision_time, double degrade_time);
     uint32_t SelectLane(uint32_t source, uint32_t destination, uint32_t chunk_size,
-                        const std::string& policy, bool has_bad_lane, uint32_t bad_lane,
-                        double bad_fraction, double chunk_start_time, double degrade_time);
+                        DecisionSignal* signal);
+    void ScheduleV5Chunk(uint32_t pg, uint32_t source, uint32_t destination,
+                         uint32_t bytes, uint32_t chunk_id);
     void InstallRdmaSubflow(uint32_t pg, uint32_t source, uint32_t destination, uint32_t bytes,
                             double start_time, uint32_t chunk_id, bool pin_lane, uint32_t lane,
                             const std::string& policy, bool is_bad_lane, bool has_bad_lane,
@@ -87,6 +98,9 @@ class TrafficScheduler {
     std::unordered_map<uint32_t, uint16_t> destination_ports_;
     std::map<uint64_t, std::vector<uint64_t>> oracle_lane_bytes_;
     std::map<uint64_t, std::vector<double>> oracle_lane_deficits_;
+    std::map<uint64_t, std::vector<double>> online_published_capacities_;
+    std::map<uint64_t, uint64_t> online_published_versions_;
+    DecisionSignal current_decision_signal_;
     std::map<uint64_t, PersistentPoolEntry> persistent_pool_;
     double last_persistent_commit_time_ = 0.0;
     bool persistent_pool_seal_scheduled_ = false;

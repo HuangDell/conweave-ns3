@@ -55,6 +55,8 @@ struct TrafficConfig {
     uint32_t v5_chunk_bytes = 0;
     uint32_t v5_size_gate_bytes = 104000;
     std::string v5_oracle_policy = "uniform";
+    // Empty means an old config: derive behavior from v5_oracle_policy.
+    std::string v5_policy;
     uint32_t v5_oracle_bad_spine = 0;
     double v5_chunk_commit_rate_gbps = 100.0;
     uint32_t v5_chunk_log = 0;
@@ -62,6 +64,9 @@ struct TrafficConfig {
     uint32_t v5_qp_pool_size = 4;
     uint32_t v5_wqe_log = 0;
     uint32_t v5_qp_state_log = 0;
+    uint32_t v5_estimator_enable = 0;
+    uint32_t v5_estimator_log = 0;
+    uint32_t v5_estimator_stale_periods = 5;
 };
 
 struct CongestionControlConfig {
@@ -131,6 +136,7 @@ struct IoConfig {
     std::string v5_chunk_output_file = "v5_chunk.txt";
     std::string v5_wqe_output_file = "v5_wqe.txt";
     std::string v5_qp_state_output_file = "v5_qp_state.txt";
+    std::string v5_estimator_output_file = "v5_estimator.csv";
 };
 
 struct LinkDegradeEvent {

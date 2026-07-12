@@ -59,6 +59,10 @@ LETFLOW_FLOWLET_TIMEOUT_US {letflow_flowlet_timeout_us}
 
 SFLOWLET_WEIGHT_MODE {sflowlet_weight_mode}
 SFLOWLET_EST_TIME_US {sflowlet_est_time_us}
+SFLOWLET_EWMA_BETA {sflowlet_ewma_beta}
+SFLOWLET_PERSIST_WINDOWS {sflowlet_persist_windows}
+SFLOWLET_DEGRADE_RATIO {sflowlet_degrade_ratio}
+SFLOWLET_BACKLOG_THRESH_BYTES {sflowlet_backlog_thresh_bytes}
 SFLOWLET_FLOWLET_TIMEOUT_US {sflowlet_flowlet_timeout_us}
 SFLOWLET_SWITCH_LOG {sflowlet_switch_log}
 SFLOWLET_OOO_LOG {sflowlet_ooo_log}
@@ -66,6 +70,7 @@ V5_NSUB {v5_nsub}
 V5_CHUNK_BYTES {v5_chunk_bytes}
 V5_SIZE_GATE_BYTES {v5_size_gate_bytes}
 V5_ORACLE_POLICY {v5_oracle_policy}
+V5_POLICY {v5_policy}
 V5_ORACLE_BAD_SPINE {v5_oracle_bad_spine}
 V5_CHUNK_COMMIT_RATE_GBPS {v5_chunk_commit_rate_gbps}
 V5_CHUNK_LOG {v5_chunk_log}
@@ -73,11 +78,15 @@ V5_QP_POOL {v5_qp_pool}
 V5_QP_POOL_SIZE {v5_qp_pool_size}
 V5_WQE_LOG {v5_wqe_log}
 V5_QP_STATE_LOG {v5_qp_state_log}
+V5_ESTIMATOR_ENABLE {v5_estimator_enable}
+V5_ESTIMATOR_LOG {v5_estimator_log}
+V5_ESTIMATOR_STALE_PERIODS {v5_estimator_stale_periods}
 FLOWLET_SWITCH_OUTPUT_FILE mix/output/{id}/{id}_out_flowlet_switch.txt
 OOO_EVENT_OUTPUT_FILE mix/output/{id}/{id}_out_ooo_events.txt
 V5_CHUNK_OUTPUT_FILE mix/output/{id}/{id}_out_v5_chunk.txt
 V5_WQE_OUTPUT_FILE mix/output/{id}/{id}_out_v5_wqe.csv
 V5_QP_STATE_OUTPUT_FILE mix/output/{id}/{id}_out_v5_qp_state.csv
+V5_ESTIMATOR_OUTPUT_FILE mix/output/{id}/{id}_out_v5_estimator.csv
 
 ALPHA_RESUME_INTERVAL 1
 RATE_DECREASE_INTERVAL 4
@@ -368,6 +377,14 @@ def main():
                         default='weighted', help="sflowlet path weighting: random/weighted/wcmp (default: weighted)")
     parser.add_argument('--sflowlet_est_time_us', dest='sflowlet_est_time_us', action='store', type=int,
                         default=200, help="sflowlet residual-capacity estimator period in us (default: 200)")
+    parser.add_argument('--sflowlet_ewma_beta', dest='sflowlet_ewma_beta', action='store', type=float,
+                        default=1.0 / 64.0, help="EWMA weight on each valid capacity sample (default: 1/64)")
+    parser.add_argument('--sflowlet_persist_windows', dest='sflowlet_persist_windows', action='store', type=int,
+                        default=3, help="valid low windows required for degraded state (default: 3)")
+    parser.add_argument('--sflowlet_degrade_ratio', dest='sflowlet_degrade_ratio', action='store', type=float,
+                        default=0.85, help="degraded-state threshold as nominal fraction (default: 0.85)")
+    parser.add_argument('--sflowlet_backlog_thresh_bytes', dest='sflowlet_backlog_thresh_bytes', action='store', type=int,
+                        default=0, help="minimum queue bytes for a valid drain-rate sample (default: 0)")
     parser.add_argument('--sflowlet_flowlet_timeout_us', dest='sflowlet_flowlet_timeout_us', action='store', type=int,
                         default=100, help="sflowlet flowlet timeout in us (default: 100)")
     parser.add_argument('--sflowlet_switch_log', dest='sflowlet_switch_log', action='store', type=int,
@@ -381,6 +398,8 @@ def main():
                         default=104000, help="v5 G-new-a: flows smaller than this are not split (default: 104000)")
     parser.add_argument('--v5_oracle_policy', dest='v5_oracle_policy', action='store',
                         default='uniform', help="v5 G-new-a oracle policy: uniform/proportional/avoid (default: uniform)")
+    parser.add_argument('--v5_policy', dest='v5_policy', action='store', default=None,
+                        help="v5 S3 policy: uniform/oracle-proportional/oracle-avoid/online-proportional")
     parser.add_argument('--v5_oracle_bad_spine', dest='v5_oracle_bad_spine', action='store', type=int,
                         default=0, help="v5 G-new-a: degraded spine node id for local bad-lane oracle (default: 0)")
     parser.add_argument('--v5_chunk_commit_rate_gbps', dest='v5_chunk_commit_rate_gbps', action='store', type=float,
@@ -395,6 +414,12 @@ def main():
                         default=0, help="v5 S2: log persistent WQE commit/completion events (default: 0)")
     parser.add_argument('--v5_qp_state_log', dest='v5_qp_state_log', action='store', type=int,
                         default=0, help="v5 S2: log persistent QP lifecycle and boundary state (default: 0)")
+    parser.add_argument('--v5_estimator_enable', dest='v5_estimator_enable', action='store', type=int,
+                        default=0, help="v5 S3: enable the local-uplink residual-capacity estimator (default: 0)")
+    parser.add_argument('--v5_estimator_log', dest='v5_estimator_log', action='store', type=int,
+                        default=0, help="v5 S3: log every estimator timer batch (default: 0)")
+    parser.add_argument('--v5_estimator_stale_periods', dest='v5_estimator_stale_periods', action='store', type=int,
+                        default=5, help="v5 S3: hold published weights after this many invalid periods (default: 5)")
 
     # #### CONWEAVE PARAMETERS ####
     # parser.add_argument('--cwh_extra_reply_deadline', dest='cwh_extra_reply_deadline', action='store',
@@ -458,6 +483,33 @@ def main():
     if args.v5_oracle_policy not in v5_oracle_policies:
         raise Exception("CONFIG ERROR : unknown --v5_oracle_policy {}".format(
             args.v5_oracle_policy))
+    legacy_policy_map = {
+        "uniform": "uniform",
+        "proportional": "oracle-proportional",
+        "avoid": "oracle-avoid",
+    }
+    v5_policy = args.v5_policy or legacy_policy_map[args.v5_oracle_policy]
+    v5_policies = {"uniform", "oracle-proportional", "oracle-avoid", "online-proportional"}
+    if v5_policy not in v5_policies:
+        raise Exception("CONFIG ERROR : unknown --v5_policy {}".format(v5_policy))
+    if args.sflowlet_est_time_us <= 0:
+        raise Exception("CONFIG ERROR : --sflowlet_est_time_us must be > 0")
+    if not 0.0 < args.sflowlet_ewma_beta <= 1.0:
+        raise Exception("CONFIG ERROR : --sflowlet_ewma_beta must be in (0,1]")
+    if args.sflowlet_persist_windows < 1:
+        raise Exception("CONFIG ERROR : --sflowlet_persist_windows must be >= 1")
+    if not 0.0 < args.sflowlet_degrade_ratio <= 1.0:
+        raise Exception("CONFIG ERROR : --sflowlet_degrade_ratio must be in (0,1]")
+    if args.sflowlet_backlog_thresh_bytes < 0:
+        raise Exception("CONFIG ERROR : --sflowlet_backlog_thresh_bytes must be >= 0")
+    if args.v5_estimator_enable not in (0, 1) or args.v5_estimator_log not in (0, 1):
+        raise Exception("CONFIG ERROR : estimator enable/log must be 0 or 1")
+    if args.v5_estimator_stale_periods < 1:
+        raise Exception("CONFIG ERROR : --v5_estimator_stale_periods must be >= 1")
+    if v5_policy == "online-proportional" and not args.v5_estimator_enable:
+        raise Exception("CONFIG ERROR : online-proportional requires --v5_estimator_enable 1")
+    if args.v5_estimator_log and not args.v5_estimator_enable:
+        raise Exception("CONFIG ERROR : --v5_estimator_log 1 requires --v5_estimator_enable 1")
     if args.v5_chunk_bytes < 0:
         raise Exception("CONFIG ERROR : --v5_chunk_bytes must be >= 0")
     if args.v5_size_gate_bytes < 0:
@@ -470,6 +522,10 @@ def main():
         raise Exception("CONFIG ERROR : --v5_qp_pool_size must be >= 1")
     if args.v5_qp_pool and args.v5_qp_pool_size != args.v5_nsub:
         raise Exception("CONFIG ERROR : persistent pool currently requires --v5_qp_pool_size == --v5_nsub")
+    if v5_policy == "online-proportional" and (
+            args.lb != "letflow" or not args.v5_qp_pool or args.v5_chunk_bytes <= 0):
+        raise Exception(
+            "CONFIG ERROR : online-proportional requires --lb letflow, --v5_qp_pool 1, and --v5_chunk_bytes > 0")
     if args.v5_wqe_log not in (0, 1) or args.v5_qp_state_log not in (0, 1):
         raise Exception("CONFIG ERROR : --v5_wqe_log and --v5_qp_state_log must be 0 or 1")
     if (args.v5_wqe_log or args.v5_qp_state_log) and not args.v5_qp_pool:
@@ -669,6 +725,10 @@ def main():
                                         letflow_flowlet_timeout_us=args.letflow_flowlet_timeout_us,
                                         sflowlet_weight_mode=sflowlet_weight_mode,
                                         sflowlet_est_time_us=args.sflowlet_est_time_us,
+                                        sflowlet_ewma_beta=args.sflowlet_ewma_beta,
+                                        sflowlet_persist_windows=args.sflowlet_persist_windows,
+                                        sflowlet_degrade_ratio=args.sflowlet_degrade_ratio,
+                                        sflowlet_backlog_thresh_bytes=args.sflowlet_backlog_thresh_bytes,
                                         sflowlet_flowlet_timeout_us=args.sflowlet_flowlet_timeout_us,
                                         sflowlet_switch_log=args.sflowlet_switch_log,
                                         sflowlet_ooo_log=args.sflowlet_ooo_log,
@@ -676,6 +736,7 @@ def main():
                                         v5_chunk_bytes=args.v5_chunk_bytes,
                                         v5_size_gate_bytes=args.v5_size_gate_bytes,
                                         v5_oracle_policy=args.v5_oracle_policy,
+                                        v5_policy=v5_policy,
                                         v5_oracle_bad_spine=args.v5_oracle_bad_spine,
                                         v5_chunk_commit_rate_gbps=args.v5_chunk_commit_rate_gbps,
                                         v5_chunk_log=args.v5_chunk_log,
@@ -683,6 +744,9 @@ def main():
                                         v5_qp_pool_size=args.v5_qp_pool_size,
                                         v5_wqe_log=args.v5_wqe_log,
                                         v5_qp_state_log=args.v5_qp_state_log,
+                                        v5_estimator_enable=args.v5_estimator_enable,
+                                        v5_estimator_log=args.v5_estimator_log,
+                                        v5_estimator_stale_periods=args.v5_estimator_stale_periods,
                                         random_seed=args.seed)
     else:
         print("unknown cc:{}".format(args.cc))
@@ -716,6 +780,7 @@ def main():
             "v5_chunk_bytes": args.v5_chunk_bytes,
             "v5_size_gate_bytes": args.v5_size_gate_bytes,
             "v5_oracle_policy": args.v5_oracle_policy,
+            "v5_policy": v5_policy,
             "v5_oracle_bad_spine": args.v5_oracle_bad_spine,
             "v5_chunk_commit_rate_gbps": args.v5_chunk_commit_rate_gbps,
             "v5_chunk_log": args.v5_chunk_log,
@@ -723,6 +788,14 @@ def main():
             "v5_qp_pool_size": args.v5_qp_pool_size,
             "v5_wqe_log": args.v5_wqe_log,
             "v5_qp_state_log": args.v5_qp_state_log,
+            "v5_estimator_enable": args.v5_estimator_enable,
+            "v5_estimator_log": args.v5_estimator_log,
+            "sflowlet_est_time_us": args.sflowlet_est_time_us,
+            "sflowlet_ewma_beta": args.sflowlet_ewma_beta,
+            "sflowlet_persist_windows": args.sflowlet_persist_windows,
+            "sflowlet_degrade_ratio": args.sflowlet_degrade_ratio,
+            "sflowlet_backlog_thresh_bytes": args.sflowlet_backlog_thresh_bytes,
+            "v5_estimator_stale_periods": args.v5_estimator_stale_periods,
             "link_degrade": link_degrade,
         },
     }

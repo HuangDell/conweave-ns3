@@ -163,7 +163,9 @@ void ConfigureLoadBalancer(const ExperimentConfig& config, SimulationState& stat
                     uint32_t output_port = state.neighbor_interfaces[node][next].idx;
                     uint64_t bandwidth = state.neighbor_interfaces[node][next].bw;
                     switch_node->m_mmu->m_congaRouting.SetLinkCapacity(output_port, bandwidth);
-                    if (config.lb.mode == LbMode::kSflowlet) {
+                    if ((config.lb.mode == LbMode::kSflowlet ||
+                         config.traffic.v5_estimator_enable) &&
+                        switch_node->m_isToR && next->GetNodeType() == 1) {
                         Ptr<QbbNetDevice> device =
                             DynamicCast<QbbNetDevice>(node->GetDevice(output_port));
                         switch_node->m_mmu->m_residualEstimator.RegisterPort(output_port, device,
@@ -210,6 +212,9 @@ void ConfigureLoadBalancer(const ExperimentConfig& config, SimulationState& stat
                 switch_node->m_mmu->m_cpRouting.SetWeightMode(config.lb.sflowlet_weight_mode);
                 switch_node->m_mmu->m_cpRouting.SetEstimator(
                     &switch_node->m_mmu->m_residualEstimator);
+            }
+            if (config.lb.mode == LbMode::kSflowlet ||
+                config.traffic.v5_estimator_enable) {
                 switch_node->m_mmu->m_residualEstimator.SetConstants(
                     config.lb.sflowlet_est_time, config.lb.sflowlet_ewma_beta,
                     config.lb.sflowlet_persist_windows, config.lb.sflowlet_degrade_ratio,
@@ -217,6 +222,8 @@ void ConfigureLoadBalancer(const ExperimentConfig& config, SimulationState& stat
                 switch_node->m_mmu->m_residualEstimator.SetSwitchInfo(switch_node->m_isToR,
                                                                       switch_node->GetId());
                 if (switch_node->m_isToR) {
+                    switch_node->m_mmu->m_residualEstimator.SetSnapshotCallback(
+                        MakeCallback(&SimulationMonitor::RecordEstimatorBatch, &monitor));
                     switch_node->m_mmu->m_residualEstimator.Start();
                 }
             }

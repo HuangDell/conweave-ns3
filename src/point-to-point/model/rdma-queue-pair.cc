@@ -105,7 +105,7 @@ RdmaQueuePair::WqeBoundary RdmaQueuePair::AppendWqe(uint32_t app_id, uint32_t ch
     NS_ASSERT_MSG(bytes > 0, "zero-byte WQE is not supported");
     NS_ASSERT_MSG(m_size <= std::numeric_limits<uint64_t>::max() - bytes,
                   "persistent QP sequence space overflow");
-    WqeBoundary boundary = {app_id, chunk_id, bytes, commit_time, m_size + bytes};
+    WqeBoundary boundary = {app_id, chunk_id, bytes, commit_time, Time(0), m_size + bytes};
     m_size = boundary.cumulative_end_seq;
     m_wqe_boundaries.push_back(boundary);
     m_idle_reported = false;
@@ -132,6 +132,18 @@ const RdmaQueuePair::WqeBoundary* RdmaQueuePair::GetWqeForSequence(uint64_t sequ
         }
     }
     return nullptr;
+}
+
+void RdmaQueuePair::MarkWqeServiceStart(uint64_t sequence, Time service_start_time) {
+    for (auto& boundary : m_wqe_boundaries) {
+        if (sequence < boundary.cumulative_end_seq) {
+            if (boundary.service_start_time.IsZero()) {
+                boundary.service_start_time = service_start_time;
+            }
+            return;
+        }
+    }
+    NS_ASSERT_MSG(false, "persistent QP sequence has no WQE boundary");
 }
 
 bool RdmaQueuePair::IsPersistentIdle() const {

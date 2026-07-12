@@ -5,6 +5,7 @@
 #include "simulation-state.h"
 
 #include <ns3/qbb-net-device.h>
+#include <ns3/residual-capacity-estimator.h>
 #include <ns3/rdma-driver.h>
 #include <ns3/rdma-hw.h>
 
@@ -29,6 +30,9 @@ class SimulationMonitor {
     void ScheduleModeHistory();
 
     FILE* V5ChunkOutput() const { return v5_chunk_output_; }
+    void RecordEstimatorBatch(
+        uint64_t time_ns, uint32_t switch_id,
+        const std::vector<ns3::ResidualCapacityEstimator::PortSnapshot>& snapshots);
 
   private:
     static void PfcTraceCallback(SimulationMonitor* monitor,
@@ -76,6 +80,7 @@ class SimulationMonitor {
     FILE* v5_chunk_output_ = NULL;
     FILE* v5_wqe_output_ = NULL;
     FILE* v5_qp_state_output_ = NULL;
+    FILE* v5_estimator_output_ = NULL;
 };
 
 }  // namespace nlb

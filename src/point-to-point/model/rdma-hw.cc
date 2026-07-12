@@ -877,6 +877,7 @@ Ptr<Packet> RdmaHw::GetNxtPacket(Ptr<RdmaQueuePair> qp) {
     uint32_t payload_size = qp->GetBytesLeft();
     const RdmaQueuePair::WqeBoundary* packet_wqe = nullptr;
     if (qp->m_persistent) {
+        qp->MarkWqeServiceStart(qp->snd_nxt, Simulator::Now());
         packet_wqe = qp->GetWqeForSequence(qp->snd_nxt);
         NS_ASSERT_MSG(packet_wqe != nullptr, "persistent QP has bytes without a WQE boundary");
         payload_size = std::min<uint64_t>(

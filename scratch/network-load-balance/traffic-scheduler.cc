@@ -56,6 +56,8 @@ void TrafficScheduler::InitializePorts() {
     LetflowRouting::ClearPinnedLanes();
     oracle_lane_bytes_.clear();
     oracle_lane_deficits_.clear();
+    online_published_capacities_.clear();
+    online_published_versions_.clear();
     persistent_pool_.clear();
     last_persistent_commit_time_ = 0.0;
     persistent_pool_seal_scheduled_ = false;
@@ -119,10 +121,9 @@ uint64_t TrafficScheduler::CalculateTargetCompletionCount() {
     return target;
 }
 
-uint64_t TrafficScheduler::LaneCounterKey(uint32_t source_tor, uint32_t destination_tor,
-                                          bool post_degrade) const {
-    return (static_cast<uint64_t>(source_tor) << 33) |
-           (static_cast<uint64_t>(destination_tor) << 1) | (post_degrade ? 1 : 0);
+uint64_t TrafficScheduler::LaneCounterKey(uint32_t source_tor,
+                                          uint32_t destination_tor) const {
+    return (static_cast<uint64_t>(source_tor) << 32) | destination_tor;
 }
 
 uint32_t TrafficScheduler::LaneOutPort(uint32_t source_tor, uint32_t destination_tor,
@@ -203,34 +204,114 @@ bool TrafficScheduler::GetBadLane(uint32_t source, uint32_t destination, uint32_
     return false;
 }
 
-std::string TrafficScheduler::ActivePolicy(bool has_bad_lane, double chunk_start_time,
-                                           double degrade_time) const {
-    if (!has_bad_lane || chunk_start_time < degrade_time) {
-        return "uniform";
+std::string TrafficScheduler::EffectivePolicy() const {
+    if (!config_.traffic.v5_policy.empty()) {
+        return config_.traffic.v5_policy;
     }
     return config_.traffic.v5_oracle_policy;
 }
 
-uint32_t TrafficScheduler::SelectLane(uint32_t source, uint32_t destination, uint32_t chunk_size,
-                                      const std::string& policy, bool has_bad_lane,
-                                      uint32_t bad_lane, double bad_fraction,
-                                      double chunk_start_time, double degrade_time) {
+TrafficScheduler::DecisionSignal TrafficScheduler::BuildDecisionSignal(
+    uint32_t source, uint32_t destination, const std::string& policy, bool has_bad_lane,
+    uint32_t bad_lane, double bad_fraction, double decision_time, double degrade_time) {
     uint32_t source_tor = Settings::hostIp2SwitchId[state_.server_addresses[source].Get()];
     uint32_t destination_tor =
         Settings::hostIp2SwitchId[state_.server_addresses[destination].Get()];
     uint32_t lane_count = LaneCount();
-    std::vector<double> weights(lane_count, 1.0);
-    if (has_bad_lane && bad_lane < lane_count) {
-        if (policy == "proportional") {
-            weights[bad_lane] = std::max(0.0, bad_fraction);
-        } else if (policy == "avoid") {
-            weights[bad_lane] = 0.0;
+    DecisionSignal signal;
+    signal.capacities_bps.assign(lane_count, 0.0);
+    signal.weights.assign(lane_count, 1.0);
+    auto switch_iterator = state_.tor_by_id.find(source_tor);
+    NS_ASSERT_MSG(switch_iterator != state_.tor_by_id.end(), "source ToR is missing");
+    ResidualCapacityEstimator& estimator =
+        switch_iterator->second->m_mmu->m_residualEstimator;
+    std::vector<ResidualCapacityEstimator::PortSnapshot> snapshots;
+    snapshots.reserve(lane_count);
+    for (uint32_t lane = 0; lane < lane_count; ++lane) {
+        uint32_t out_port = LaneOutPort(source_tor, destination_tor, lane);
+        ResidualCapacityEstimator::PortSnapshot snapshot = estimator.GetSnapshot(out_port);
+        snapshots.push_back(snapshot);
+        if (snapshot.nominalBps > 0) {
+            signal.capacities_bps[lane] = snapshot.nominalBps;
+        } else if (policy == "online-proportional") {
+            NS_ASSERT_MSG(false, "online policy requires every lane to have a registered estimator port");
+        } else if (out_port != static_cast<uint32_t>(-1)) {
+            Ptr<QbbNetDevice> device = DynamicCast<QbbNetDevice>(
+                state_.nodes.Get(source_tor)->GetDevice(out_port));
+            signal.capacities_bps[lane] = device ? device->GetDataRate().GetBitRate() : 0;
+        }
+        signal.estimate_version = std::max(signal.estimate_version,
+                                           snapshot.estimateVersion);
+        if (snapshot.validSampleCount > 0) {
+            signal.estimate_age_ns = std::max(signal.estimate_age_ns,
+                                              snapshot.sampleAgeNs);
         }
     }
 
-    bool post_degrade =
-        has_bad_lane && chunk_start_time >= degrade_time && policy != "uniform";
-    uint64_t key = LaneCounterKey(source_tor, destination_tor, post_degrade);
+    bool oracle_proportional = policy == "oracle-proportional" || policy == "proportional";
+    bool oracle_avoid = policy == "oracle-avoid" || policy == "avoid";
+    if ((oracle_proportional || oracle_avoid) && has_bad_lane && bad_lane < lane_count &&
+        decision_time >= degrade_time) {
+        signal.capacities_bps[bad_lane] *= oracle_avoid ? 0.0 : std::max(0.0, bad_fraction);
+    } else if (policy == "online-proportional") {
+        uint64_t stale_ns = static_cast<uint64_t>(
+            config_.lb.sflowlet_est_time.GetNanoSeconds()) *
+            config_.traffic.v5_estimator_stale_periods;
+        bool vector_usable = true;
+        uint64_t version = 0;
+        uint64_t max_age = 0;
+        std::vector<double> candidate(lane_count, 0.0);
+        for (uint32_t lane = 0; lane < lane_count; ++lane) {
+            const auto& snapshot = snapshots[lane];
+            version = std::max(version, snapshot.estimateVersion);
+            if (snapshot.validSampleCount == 0) {
+                candidate[lane] = snapshot.nominalBps;
+                continue;
+            }
+            max_age = std::max(max_age, snapshot.sampleAgeNs);
+            if (snapshot.sampleAgeNs > stale_ns) {
+                vector_usable = false;
+            }
+            candidate[lane] = std::max(
+                0.0, std::min(snapshot.ewmaCEffBps,
+                              static_cast<double>(snapshot.nominalBps)));
+        }
+        uint64_t key = LaneCounterKey(source_tor, destination_tor);
+        if (vector_usable) {
+            online_published_capacities_[key] = candidate;
+            online_published_versions_[key] = version;
+        }
+        auto published = online_published_capacities_.find(key);
+        if (published != online_published_capacities_.end()) {
+            signal.capacities_bps = published->second;
+            signal.estimate_version = online_published_versions_[key];
+        }
+        signal.estimate_age_ns = max_age;
+    }
+
+    if (policy == "uniform") {
+        signal.weights.assign(lane_count, 1.0 / lane_count);
+    } else {
+        double capacity_sum = 0.0;
+        for (double capacity : signal.capacities_bps) {
+            capacity_sum += capacity;
+        }
+        NS_ASSERT_MSG(capacity_sum > 0.0, "all lane capacities are zero");
+        for (uint32_t lane = 0; lane < lane_count; ++lane) {
+            signal.weights[lane] = signal.capacities_bps[lane] / capacity_sum;
+        }
+    }
+    return signal;
+}
+
+uint32_t TrafficScheduler::SelectLane(uint32_t source, uint32_t destination,
+                                      uint32_t chunk_size, DecisionSignal* signal) {
+    uint32_t source_tor = Settings::hostIp2SwitchId[state_.server_addresses[source].Get()];
+    uint32_t destination_tor =
+        Settings::hostIp2SwitchId[state_.server_addresses[destination].Get()];
+    uint32_t lane_count = LaneCount();
+    const std::vector<double>& weights = signal->weights;
+    uint64_t key = LaneCounterKey(source_tor, destination_tor);
     if (PersistentPoolEnabled()) {
         std::vector<double>& deficits = oracle_lane_deficits_[key];
         if (deficits.size() != lane_count) {
@@ -259,6 +340,7 @@ uint32_t TrafficScheduler::SelectLane(uint32_t source, uint32_t destination, uin
             }
         }
         deficits[best_lane] -= chunk_size;
+        signal->deficits = deficits;
         return best_lane;
     }
 
@@ -283,6 +365,30 @@ uint32_t TrafficScheduler::SelectLane(uint32_t source, uint32_t destination, uin
     }
     assigned[best_lane] += chunk_size;
     return best_lane;
+}
+
+void TrafficScheduler::ScheduleV5Chunk(uint32_t pg, uint32_t source,
+                                       uint32_t destination, uint32_t bytes,
+                                       uint32_t chunk_id) {
+    std::string policy = EffectivePolicy();
+    bool oracle_policy = policy == "oracle-proportional" || policy == "oracle-avoid" ||
+                         policy == "proportional" || policy == "avoid";
+    uint32_t bad_lane = static_cast<uint32_t>(-1);
+    double bad_fraction = 1.0;
+    double degrade_time = std::numeric_limits<double>::max();
+    bool has_bad_lane = false;
+    if (oracle_policy) {
+        has_bad_lane =
+            GetBadLane(source, destination, &bad_lane, &bad_fraction, &degrade_time);
+    }
+    double decision_time = Simulator::Now().GetSeconds();
+    current_decision_signal_ = BuildDecisionSignal(
+        source, destination, policy, has_bad_lane, bad_lane, bad_fraction,
+        decision_time, degrade_time);
+    uint32_t lane = SelectLane(source, destination, bytes, &current_decision_signal_);
+    InstallRdmaSubflow(pg, source, destination, bytes, decision_time, chunk_id, true,
+                       lane, policy, has_bad_lane && lane == bad_lane, has_bad_lane,
+                       bad_lane, bad_fraction, degrade_time);
 }
 
 void TrafficScheduler::InstallRdmaSubflow(uint32_t pg, uint32_t source, uint32_t destination,
@@ -327,38 +433,17 @@ void TrafficScheduler::InstallRdmaSubflow(uint32_t pg, uint32_t source, uint32_t
                                      : static_cast<uint32_t>(-1);
         std::ostringstream capacities;
         std::ostringstream weights;
-        for (uint32_t current_lane = 0; current_lane < LaneCount();
-             ++current_lane) {
+        for (uint32_t current_lane = 0; current_lane < LaneCount(); ++current_lane) {
             if (current_lane > 0) {
                 capacities << ';';
                 weights << ';';
             }
-            uint32_t current_port = LaneOutPort(source_tor, destination_tor, current_lane);
-            uint64_t capacity_bps = 0;
-            if (current_port != static_cast<uint32_t>(-1)) {
-                Ptr<QbbNetDevice> device = DynamicCast<QbbNetDevice>(
-                    state_.nodes.Get(source_tor)->GetDevice(current_port));
-                capacity_bps = device ? device->GetDataRate().GetBitRate() : 0;
-            }
-            if (has_bad_lane && current_lane == bad_lane && start_time >= degrade_time) {
-                capacity_bps = static_cast<uint64_t>(capacity_bps * bad_fraction);
-            }
-            capacities << capacity_bps;
-            double weight = 1.0;
-            if (has_bad_lane && current_lane == bad_lane) {
-                if (policy == "avoid") {
-                    weight = 0.0;
-                } else if (policy == "proportional") {
-                    weight = bad_fraction;
-                }
-            }
-            weights << weight;
+            capacities << current_decision_signal_.capacities_bps[current_lane];
+            weights << current_decision_signal_.weights[current_lane];
         }
         std::ostringstream deficits;
         if (PersistentPoolEnabled()) {
-            bool post_degrade = has_bad_lane && start_time >= degrade_time && policy != "uniform";
-            uint64_t deficit_key = LaneCounterKey(source_tor, destination_tor, post_degrade);
-            const auto& lane_deficits = oracle_lane_deficits_[deficit_key];
+            const auto& lane_deficits = current_decision_signal_.deficits;
             for (uint32_t current_lane = 0; current_lane < lane_deficits.size(); ++current_lane) {
                 if (current_lane > 0) {
                     deficits << ';';
@@ -369,14 +454,15 @@ void TrafficScheduler::InstallRdmaSubflow(uint32_t pg, uint32_t source, uint32_t
             deficits << "na";
         }
         fprintf(chunk_output,
-                "%u %u %u %u %u %u %u %lu %u %s %u %u %lu %u %u %u %u %s %s %s\n",
+                "%u %u %u %u %u %u %u %lu %u %s %u %u %lu %u %u %u %lu %s %s %s %lu\n",
                 flow_input_.idx,
                 chunk_id, source, destination, source_port, destination_port, bytes, start_ns,
                 pin_lane ? lane : static_cast<uint32_t>(-1), policy.c_str(),
                 is_bad_lane ? 1 : 0, has_bad_lane ? 1 : 0,
                 PersistentPoolEnabled() ? pool_key : qp_key, source_tor,
-                destination_tor, out_port, 0, capacities.str().c_str(), weights.str().c_str(),
-                deficits.str().c_str());
+                destination_tor, out_port, current_decision_signal_.estimate_version,
+                capacities.str().c_str(), weights.str().c_str(), deficits.str().c_str(),
+                current_decision_signal_.estimate_age_ns);
         fflush(chunk_output);
     }
 
@@ -509,11 +595,6 @@ void TrafficScheduler::ScheduleFlowInputs() {
                state_.nodes.Get(destination)->GetNodeType() == 0);
 
         if (ChunkModeEnabled()) {
-            uint32_t bad_lane;
-            double bad_fraction;
-            double degrade_time;
-            bool has_bad_lane =
-                GetBadLane(source, destination, &bad_lane, &bad_fraction, &degrade_time);
             double bytes_per_second =
                 config_.traffic.v5_chunk_commit_rate_gbps > 0.0
                     ? config_.traffic.v5_chunk_commit_rate_gbps * 1000000000.0 / 8.0
@@ -529,14 +610,12 @@ void TrafficScheduler::ScheduleFlowInputs() {
                              : std::min<uint32_t>(remaining, config_.traffic.v5_chunk_bytes);
                 double chunk_start =
                     flow_input_.start_time + static_cast<double>(committed_bytes) / bytes_per_second;
-                std::string policy = ActivePolicy(has_bad_lane, chunk_start, degrade_time);
-                uint32_t lane = SelectLane(source, destination, chunk_length, policy,
-                                           has_bad_lane, bad_lane, bad_fraction, chunk_start,
-                                           degrade_time);
-                InstallRdmaSubflow(priority_group, source, destination, chunk_length, chunk_start,
-                                   chunk_id, true, lane, policy,
-                                   has_bad_lane && lane == bad_lane, has_bad_lane, bad_lane,
-                                   bad_fraction, degrade_time);
+                double start_delay = std::max(0.0, chunk_start - Simulator::Now().GetSeconds());
+                Simulator::Schedule(Seconds(start_delay), &TrafficScheduler::ScheduleV5Chunk,
+                                    this, priority_group, source, destination, chunk_length,
+                                    chunk_id);
+                last_persistent_commit_time_ =
+                    std::max(last_persistent_commit_time_, chunk_start);
                 remaining -= chunk_length;
                 committed_bytes += chunk_length;
                 ++chunk_id;
@@ -548,6 +627,9 @@ void TrafficScheduler::ScheduleFlowInputs() {
             }
             uint32_t base_length = target_length / subflow_count;
             uint32_t remainder = target_length % subflow_count;
+            current_decision_signal_ = BuildDecisionSignal(
+                source, destination, "uniform", false, static_cast<uint32_t>(-1), 1.0,
+                Simulator::Now().GetSeconds(), std::numeric_limits<double>::max());
             for (uint32_t i = 0; i < subflow_count; ++i) {
                 uint32_t subflow_length = base_length + (i == subflow_count - 1 ? remainder : 0);
                 InstallRdmaSubflow(priority_group, source, destination, subflow_length,

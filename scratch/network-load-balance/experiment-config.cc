@@ -39,6 +39,19 @@ bool LoadExperimentConfig(const std::string& path, ExperimentConfig* config) {
             conf >> value;
             config->lb.sflowlet_est_time = ns3::MicroSeconds(value);
             std::cerr << "SFLOWLET_EST_TIME_US\t\t\t" << config->lb.sflowlet_est_time << "\n";
+        } else if (key == "SFLOWLET_EWMA_BETA") {
+            conf >> config->lb.sflowlet_ewma_beta;
+            std::cerr << "SFLOWLET_EWMA_BETA\t\t\t" << config->lb.sflowlet_ewma_beta << "\n";
+        } else if (key == "SFLOWLET_PERSIST_WINDOWS") {
+            conf >> config->lb.sflowlet_persist_windows;
+            std::cerr << "SFLOWLET_PERSIST_WINDOWS\t\t" << config->lb.sflowlet_persist_windows << "\n";
+        } else if (key == "SFLOWLET_DEGRADE_RATIO") {
+            conf >> config->lb.sflowlet_degrade_ratio;
+            std::cerr << "SFLOWLET_DEGRADE_RATIO\t\t" << config->lb.sflowlet_degrade_ratio << "\n";
+        } else if (key == "SFLOWLET_BACKLOG_THRESH_BYTES") {
+            conf >> config->lb.sflowlet_backlog_thresh_bytes;
+            std::cerr << "SFLOWLET_BACKLOG_THRESH_BYTES\t"
+                      << config->lb.sflowlet_backlog_thresh_bytes << "\n";
         } else if (key == "SFLOWLET_FLOWLET_TIMEOUT_US") {
             uint32_t value = 0;
             conf >> value;
@@ -65,6 +78,9 @@ bool LoadExperimentConfig(const std::string& path, ExperimentConfig* config) {
         } else if (key == "V5_ORACLE_POLICY") {
             conf >> config->traffic.v5_oracle_policy;
             std::cerr << "V5_ORACLE_POLICY\t\t" << config->traffic.v5_oracle_policy << "\n";
+        } else if (key == "V5_POLICY") {
+            conf >> config->traffic.v5_policy;
+            std::cerr << "V5_POLICY\t\t\t" << config->traffic.v5_policy << "\n";
         } else if (key == "V5_ORACLE_BAD_SPINE") {
             conf >> config->traffic.v5_oracle_bad_spine;
             std::cerr << "V5_ORACLE_BAD_SPINE\t\t" << config->traffic.v5_oracle_bad_spine
@@ -88,6 +104,16 @@ bool LoadExperimentConfig(const std::string& path, ExperimentConfig* config) {
         } else if (key == "V5_QP_STATE_LOG") {
             conf >> config->traffic.v5_qp_state_log;
             std::cerr << "V5_QP_STATE_LOG\t\t" << config->traffic.v5_qp_state_log << "\n";
+        } else if (key == "V5_ESTIMATOR_ENABLE") {
+            conf >> config->traffic.v5_estimator_enable;
+            std::cerr << "V5_ESTIMATOR_ENABLE\t\t" << config->traffic.v5_estimator_enable << "\n";
+        } else if (key == "V5_ESTIMATOR_LOG") {
+            conf >> config->traffic.v5_estimator_log;
+            std::cerr << "V5_ESTIMATOR_LOG\t\t" << config->traffic.v5_estimator_log << "\n";
+        } else if (key == "V5_ESTIMATOR_STALE_PERIODS") {
+            conf >> config->traffic.v5_estimator_stale_periods;
+            std::cerr << "V5_ESTIMATOR_STALE_PERIODS\t"
+                      << config->traffic.v5_estimator_stale_periods << "\n";
         } else if (key == "FLOWLET_SWITCH_OUTPUT_FILE") {
             conf >> config->io.flowlet_switch_output_file;
             std::cerr << "FLOWLET_SWITCH_OUTPUT_FILE\t\t"
@@ -105,6 +131,10 @@ bool LoadExperimentConfig(const std::string& path, ExperimentConfig* config) {
         } else if (key == "V5_QP_STATE_OUTPUT_FILE") {
             conf >> config->io.v5_qp_state_output_file;
             std::cerr << "V5_QP_STATE_OUTPUT_FILE\t" << config->io.v5_qp_state_output_file
+                      << "\n";
+        } else if (key == "V5_ESTIMATOR_OUTPUT_FILE") {
+            conf >> config->io.v5_estimator_output_file;
+            std::cerr << "V5_ESTIMATOR_OUTPUT_FILE\t" << config->io.v5_estimator_output_file
                       << "\n";
         } else if (key == "CONWEAVE_TX_EXPIRY_TIME") {
             uint32_t value = 0;
