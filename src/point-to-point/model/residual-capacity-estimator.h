@@ -44,6 +44,7 @@ class ResidualCapacityEstimator {
         bool sampleValid = false;
         uint64_t deltaBusyNs = 0;
         uint64_t deltaDepartedBytes = 0;
+        uint64_t deltaBacklogEvents = 0;
         uint64_t queueBytes = 0;
         uint64_t lastValidTimeNs = 0;
         uint64_t sampleAgeNs = 0;
@@ -51,6 +52,7 @@ class ResidualCapacityEstimator {
         uint32_t degradeRun = 0;
         bool degradedState = false;
         uint64_t estimateVersion = 0;
+        uint64_t sampleVersion = 0;
     };
 
     typedef Callback<void, uint64_t, uint32_t, const std::vector<PortSnapshot>&>
@@ -97,17 +99,20 @@ class ResidualCapacityEstimator {
         uint64_t nominalBps = 0;
         uint64_t lastBusyNs = 0;
         uint64_t lastDepartedBytes = 0;
+        uint64_t lastBacklogEvents = 0;
         double rawBps = 0.0;
         double ewmaBps = 0.0;     // residual-capacity estimate (bps)
         bool sampleValid = false;
         uint64_t deltaBusyNs = 0;
         uint64_t deltaDepartedBytes = 0;
+        uint64_t deltaBacklogEvents = 0;
         uint64_t queueBytes = 0;
         uint64_t lastValidTimeNs = 0;
         uint64_t validSampleCount = 0;
         uint32_t degradeRun = 0;  // consecutive windows below degradeRatio*nominal
         bool degraded = false;    // persistence-filtered classification
         bool initialized = false;
+        uint64_t sampleVersion = 0;
     };
 
     std::map<uint32_t, Ptr<QbbNetDevice> > m_devMap;

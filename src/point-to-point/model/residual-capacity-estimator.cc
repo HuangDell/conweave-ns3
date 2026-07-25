@@ -33,6 +33,7 @@ void ResidualCapacityEstimator::RegisterPort(uint32_t outPort, Ptr<QbbNetDevice>
     st.ewmaBps = static_cast<double>(nominalBps);  // start healthy
     st.lastBusyNs = dev ? dev->GetTxBusyTimeNs() : 0;
     st.lastDepartedBytes = dev ? dev->GetTxDepartedBytes() : 0;
+    st.lastBacklogEvents = dev ? dev->GetTxBacklogEvents() : 0;
 }
 
 uint64_t ResidualCapacityEstimator::GetResidualCapacity(uint32_t outPort) const {
@@ -63,6 +64,7 @@ ResidualCapacityEstimator::PortSnapshot ResidualCapacityEstimator::GetSnapshot(
     snapshot.sampleValid = st.sampleValid;
     snapshot.deltaBusyNs = st.deltaBusyNs;
     snapshot.deltaDepartedBytes = st.deltaDepartedBytes;
+    snapshot.deltaBacklogEvents = st.deltaBacklogEvents;
     snapshot.queueBytes = st.queueBytes;
     snapshot.lastValidTimeNs = st.lastValidTimeNs;
     snapshot.sampleAgeNs = st.lastValidTimeNs == 0
@@ -72,6 +74,7 @@ ResidualCapacityEstimator::PortSnapshot ResidualCapacityEstimator::GetSnapshot(
     snapshot.degradeRun = st.degradeRun;
     snapshot.degradedState = st.degraded;
     snapshot.estimateVersion = m_estimateVersion;
+    snapshot.sampleVersion = st.sampleVersion;
     return snapshot;
 }
 
@@ -110,6 +113,7 @@ void ResidualCapacityEstimator::Stop() { m_estEvent.Cancel(); }
 
 void ResidualCapacityEstimator::EstimatorEvent() {
     bool batch_has_valid_update = false;
+    uint64_t next_version = m_estimateVersion + 1;
     for (auto &kv : m_devMap) {
         uint32_t outPort = kv.first;
         Ptr<QbbNetDevice> dev = kv.second;
@@ -118,22 +122,27 @@ void ResidualCapacityEstimator::EstimatorEvent() {
 
         uint64_t busyNs = dev->GetTxBusyTimeNs();
         uint64_t departed = dev->GetTxDepartedBytes();
+        uint64_t backlogEvents = dev->GetTxBacklogEvents();
         uint64_t qbytes = dev->GetQueue() ? dev->GetQueue()->GetNBytesTotal() : 0;
 
         uint64_t dBusy = busyNs - st.lastBusyNs;
         uint64_t dBytes = departed - st.lastDepartedBytes;
+        uint64_t dBacklogEvents = backlogEvents - st.lastBacklogEvents;
         st.lastBusyNs = busyNs;
         st.lastDepartedBytes = departed;
+        st.lastBacklogEvents = backlogEvents;
         st.deltaBusyNs = dBusy;
         st.deltaDepartedBytes = dBytes;
+        st.deltaBacklogEvents = dBacklogEvents;
         st.queueBytes = qbytes;
         st.sampleValid = false;
         st.rawBps = 0.0;
 
-        // Backlog gate (G1): only trust the drain-rate sample when the egress
-        // queue was non-empty this window, i.e. the link is the bottleneck.
-        // Without backlog, c_inst reflects offered load, not capacity -> hold.
-        if (qbytes <= m_backlogThreshBytes || dBusy == 0) {
+        // Backlog gate (G1): trust a window if the queue is non-empty now or
+        // an arrival observed an occupied egress during this window.
+        bool windowBacklogged = qbytes > m_backlogThreshBytes ||
+                                (m_backlogThreshBytes == 0 && dBacklogEvents > 0);
+        if (!windowBacklogged || dBusy == 0) {
             continue;
         }
 
@@ -146,6 +155,7 @@ void ResidualCapacityEstimator::EstimatorEvent() {
         st.sampleValid = true;
         st.lastValidTimeNs = Simulator::Now().GetNanoSeconds();
         ++st.validSampleCount;
+        st.sampleVersion = next_version;
         batch_has_valid_update = true;
 
         // Persistence filter: confirm degradation only after K consecutive
@@ -160,7 +170,7 @@ void ResidualCapacityEstimator::EstimatorEvent() {
         }
     }
     if (batch_has_valid_update) {
-        ++m_estimateVersion;
+        m_estimateVersion = next_version;
     }
     if (!m_snapshotCallback.IsNull()) {
         m_snapshotCallback(Simulator::Now().GetNanoSeconds(), m_switch_id, GetSnapshots());

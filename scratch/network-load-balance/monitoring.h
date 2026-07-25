@@ -10,6 +10,7 @@
 #include <ns3/rdma-hw.h>
 
 #include <cstdio>
+#include <map>
 
 namespace nlb {
 
@@ -66,6 +67,7 @@ class SimulationMonitor {
     SimulationState& state_;
     uint64_t target_completion_count_ = 0;
     bool history_printed_ = false;
+    std::map<uint64_t, uint64_t> estimator_true_rates_;
 
     FILE* pfc_output_ = NULL;
     FILE* fct_output_ = NULL;

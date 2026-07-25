@@ -403,6 +403,9 @@ bool QbbNetDevice::Send(Ptr<Packet> packet, const Address &dest, uint16_t protoc
 bool QbbNetDevice::SwitchSend(uint32_t qIndex, Ptr<Packet> packet, CustomHeader &ch) {
     m_macTxTrace(packet);
     m_traceEnqueue(packet, qIndex);
+    if (m_txMachineState == BUSY || m_queue->GetNBytesTotal() > 0) {
+        ++m_txBacklogEvents;
+    }
     m_queue->Enqueue(packet, qIndex);
     DequeueAndTransmit();
     return true;

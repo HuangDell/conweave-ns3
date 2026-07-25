@@ -12,7 +12,9 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cmath>
 #include <cstdio>
+#include <iomanip>
 #include <iostream>
 #include <iterator>
 #include <limits>
@@ -58,6 +60,7 @@ void TrafficScheduler::InitializePorts() {
     oracle_lane_deficits_.clear();
     online_published_capacities_.clear();
     online_published_versions_.clear();
+    online_published_epochs_.clear();
     last_probe_epochs_.clear();
     binary_hold_until_ns_.clear();
     persistent_pool_.clear();
@@ -270,8 +273,12 @@ void TrafficScheduler::MaybeSelectRecoveryProbe(
     uint64_t stale_ns = static_cast<uint64_t>(
         config_.lb.sflowlet_est_time.GetNanoSeconds()) *
         config_.traffic.v5_estimator_stale_periods;
+    uint64_t estimator_period_ns = static_cast<uint64_t>(
+        config_.lb.sflowlet_est_time.GetNanoSeconds());
     uint64_t period_ns = config_.traffic.v5_probe_period_us * 1000;
-    uint64_t probe_epoch = Simulator::Now().GetNanoSeconds() / period_ns;
+    uint64_t now_ns = Simulator::Now().GetNanoSeconds();
+    uint64_t probe_epoch = now_ns / period_ns;
+    uint64_t time_to_sample_ns = estimator_period_ns - now_ns % estimator_period_ns;
     uint32_t probe_cap = std::min(config_.traffic.v5_probe_bytes,
                                   config_.traffic.v5_chunk_bytes);
     uint64_t key = LaneCounterKey(source_tor, destination_tor);
@@ -284,8 +291,13 @@ void TrafficScheduler::MaybeSelectRecoveryProbe(
         bool stale_degraded = observation.degraded_state &&
                               observation.valid_sample_count > 0 &&
                               observation.sample_age_ns >= stale_ns;
+        uint64_t probe_window_ns = observation.nominal_bps == 0
+                                       ? 0
+                                       : static_cast<uint64_t>(std::ceil(
+                                             static_cast<long double>(chunk_size) * 8.0L *
+                                             1000000000.0L / observation.nominal_bps));
         if (stale_degraded && last_epochs[lane] != probe_epoch &&
-            chunk_size <= probe_cap) {
+            chunk_size <= probe_cap && time_to_sample_ns <= probe_window_ns) {
             signal->is_probe = true;
             signal->probe_epoch = probe_epoch;
             signal->probe_bytes = chunk_size;
@@ -309,6 +321,10 @@ TrafficScheduler::DecisionSignal TrafficScheduler::BuildDecisionSignal(
     signal.weights.assign(lane_count, 1.0);
     signal.binary_congested.assign(lane_count, 0);
     signal.binary_hold_until_ns.assign(lane_count, 0);
+    signal.published_versions.assign(lane_count, 0);
+    signal.publication_sources.assign(lane_count, kHealthyNominal);
+    signal.sample_ages_ns.assign(lane_count, 0);
+    signal.degraded_states.assign(lane_count, 0);
     auto switch_iterator = state_.tor_by_id.find(source_tor);
     NS_ASSERT_MSG(switch_iterator != state_.tor_by_id.end(), "source ToR is missing");
     ResidualCapacityEstimator& estimator =
@@ -335,6 +351,9 @@ TrafficScheduler::DecisionSignal TrafficScheduler::BuildDecisionSignal(
         observation.valid_sample_count = snapshot.validSampleCount;
         observation.degraded_state = snapshot.degradedState;
         observations.push_back(observation);
+        signal.published_versions[lane] = snapshot.sampleVersion;
+        signal.sample_ages_ns[lane] = snapshot.sampleAgeNs;
+        signal.degraded_states[lane] = snapshot.degradedState ? 1 : 0;
         if (snapshot.nominalBps > 0) {
             signal.capacities_bps[lane] = snapshot.nominalBps;
         } else if (policy == "online-proportional" || policy == "queue-ecn-binary") {
@@ -359,36 +378,60 @@ TrafficScheduler::DecisionSignal TrafficScheduler::BuildDecisionSignal(
         uint64_t stale_ns = static_cast<uint64_t>(
             config_.lb.sflowlet_est_time.GetNanoSeconds()) *
             config_.traffic.v5_estimator_stale_periods;
-        bool vector_usable = true;
-        uint64_t version = 0;
-        uint64_t max_age = 0;
-        std::vector<double> candidate(lane_count, 0.0);
+        uint64_t key = LaneCounterKey(source_tor, destination_tor);
+        std::vector<double>& published = online_published_capacities_[key];
+        std::vector<uint64_t>& published_versions = online_published_versions_[key];
+        if (published.size() != lane_count || published_versions.size() != lane_count) {
+            published.assign(lane_count, 0.0);
+            published_versions.assign(lane_count, 0);
+            for (uint32_t lane = 0; lane < lane_count; ++lane) {
+                const auto& snapshot = snapshots[lane];
+                published[lane] = snapshot.degradedState && snapshot.validSampleCount > 0
+                                      ? std::max(0.0, std::min(
+                                            snapshot.ewmaCEffBps,
+                                            static_cast<double>(snapshot.nominalBps)))
+                                      : snapshot.nominalBps;
+                published_versions[lane] = snapshot.degradedState
+                                               ? snapshot.sampleVersion
+                                               : 0;
+                signal.publication_changed |=
+                    std::fabs(published[lane] -
+                              static_cast<double>(snapshot.nominalBps)) > 0.5;
+            }
+        }
+
         for (uint32_t lane = 0; lane < lane_count; ++lane) {
             const auto& snapshot = snapshots[lane];
-            version = std::max(version, snapshot.estimateVersion);
-            if (snapshot.validSampleCount == 0) {
-                candidate[lane] = snapshot.nominalBps;
-                continue;
+            double next_capacity = published[lane];
+            uint64_t next_version = published_versions[lane];
+            uint32_t source = kHoldDegraded;
+            if (snapshot.validSampleCount == 0 ||
+                (snapshot.sampleAgeNs > stale_ns && !snapshot.degradedState)) {
+                next_capacity = snapshot.nominalBps;
+                next_version = 0;
+                source = kHealthyNominal;
+            } else if (snapshot.sampleAgeNs <= stale_ns) {
+                next_capacity = std::max(
+                    0.0, std::min(snapshot.ewmaCEffBps,
+                                  static_cast<double>(snapshot.nominalBps)));
+                next_version = snapshot.sampleVersion;
+                source = kFreshEstimate;
             }
-            max_age = std::max(max_age, snapshot.sampleAgeNs);
-            if (snapshot.sampleAgeNs > stale_ns) {
-                vector_usable = false;
+            if (std::fabs(next_capacity - published[lane]) > 0.5) {
+                signal.publication_changed = true;
             }
-            candidate[lane] = std::max(
-                0.0, std::min(snapshot.ewmaCEffBps,
-                              static_cast<double>(snapshot.nominalBps)));
+            published[lane] = next_capacity;
+            published_versions[lane] = next_version;
+            signal.publication_sources[lane] = source;
         }
-        uint64_t key = LaneCounterKey(source_tor, destination_tor);
-        if (vector_usable) {
-            online_published_capacities_[key] = candidate;
-            online_published_versions_[key] = version;
+
+        signal.capacities_bps = published;
+        signal.published_versions = published_versions;
+        uint64_t& published_epoch = online_published_epochs_[key];
+        for (uint64_t version : published_versions) {
+            published_epoch = std::max(published_epoch, version);
         }
-        auto published = online_published_capacities_.find(key);
-        if (published != online_published_capacities_.end()) {
-            signal.capacities_bps = published->second;
-            signal.estimate_version = online_published_versions_[key];
-        }
-        signal.estimate_age_ns = max_age;
+        signal.estimate_version = published_epoch;
     } else if (policy == "queue-ecn-binary") {
         ApplyQueueEcnBinary(source_tor, destination_tor, observations, &signal);
     }
@@ -559,6 +602,8 @@ void TrafficScheduler::InstallRdmaSubflow(uint32_t app_id, uint32_t pg,
                                      : static_cast<uint32_t>(-1);
         std::ostringstream capacities;
         std::ostringstream weights;
+        capacities << std::setprecision(17);
+        weights << std::setprecision(17);
         for (uint32_t current_lane = 0; current_lane < LaneCount(); ++current_lane) {
             if (current_lane > 0) {
                 capacities << ';';
@@ -581,17 +626,29 @@ void TrafficScheduler::InstallRdmaSubflow(uint32_t app_id, uint32_t pg,
         }
         std::ostringstream binary_congested;
         std::ostringstream binary_hold_until;
+        std::ostringstream published_versions;
+        std::ostringstream publication_sources;
+        std::ostringstream sample_ages;
+        std::ostringstream degraded_states;
         for (uint32_t current_lane = 0; current_lane < LaneCount(); ++current_lane) {
             if (current_lane > 0) {
                 binary_congested << ';';
                 binary_hold_until << ';';
+                published_versions << ';';
+                publication_sources << ';';
+                sample_ages << ';';
+                degraded_states << ';';
             }
             binary_congested << current_decision_signal_.binary_congested[current_lane];
             binary_hold_until << current_decision_signal_.binary_hold_until_ns[current_lane];
+            published_versions << current_decision_signal_.published_versions[current_lane];
+            publication_sources << current_decision_signal_.publication_sources[current_lane];
+            sample_ages << current_decision_signal_.sample_ages_ns[current_lane];
+            degraded_states << current_decision_signal_.degraded_states[current_lane];
         }
         fprintf(chunk_output,
                 "%u %u %u %u %u %u %u %lu %u %s %u %u %lu %u %u %u %lu %s %s %s %lu "
-                "%u %lu %u %u %s %s\n",
+                "%u %lu %u %u %s %s %s %s %u %s %s\n",
                 app_id, chunk_id, source, destination, source_port, destination_port,
                 bytes, start_ns,
                 pin_lane ? lane : static_cast<uint32_t>(-1), policy.c_str(),
@@ -604,7 +661,10 @@ void TrafficScheduler::InstallRdmaSubflow(uint32_t app_id, uint32_t pg,
                 current_decision_signal_.probe_epoch,
                 current_decision_signal_.probe_bytes,
                 current_decision_signal_.probe_lane,
-                binary_congested.str().c_str(), binary_hold_until.str().c_str());
+                binary_congested.str().c_str(), binary_hold_until.str().c_str(),
+                published_versions.str().c_str(), publication_sources.str().c_str(),
+                current_decision_signal_.publication_changed ? 1 : 0,
+                sample_ages.str().c_str(), degraded_states.str().c_str());
         fflush(chunk_output);
     }
 

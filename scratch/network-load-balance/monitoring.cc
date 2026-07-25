@@ -89,9 +89,10 @@ bool SimulationMonitor::OpenLateOutputs() {
         if (v5_estimator_output_) {
             fprintf(v5_estimator_output_,
                     "time_ns,tor,dst_tor,lane,out_port,nominal_bps,true_rate_bps,"
-                    "delta_busy_ns,delta_departed_bytes,queue_bytes,sample_valid,"
+                    "delta_busy_ns,delta_departed_bytes,delta_backlog_events,queue_bytes,sample_valid,"
                     "raw_c_eff_bps,ewma_c_eff_bps,last_valid_time_ns,sample_age_ns,"
-                    "valid_sample_count,degrade_run,degraded_state,estimate_version\n");
+                    "valid_sample_count,degrade_run,degraded_state,estimate_version,"
+                    "sample_version,rate_transition\n");
         }
     }
 
@@ -151,6 +152,12 @@ void SimulationMonitor::RecordEstimatorBatch(
                                             switch_node->GetDevice(snapshot.outPort))
                                       : NULL;
         uint64_t true_rate_bps = device ? device->GetDataRate().GetBitRate() : 0;
+        uint64_t rate_key = (static_cast<uint64_t>(switch_id) << 32) | snapshot.outPort;
+        auto rate_insert = estimator_true_rates_.insert(
+            std::make_pair(rate_key, true_rate_bps));
+        bool rate_transition = !rate_insert.second &&
+                               rate_insert.first->second != true_rate_bps;
+        rate_insert.first->second = true_rate_bps;
         bool emitted = false;
         for (const auto& destination_paths :
              switch_node->m_mmu->m_letflowRouting.m_letflowRoutingTable) {
@@ -158,16 +165,18 @@ void SimulationMonitor::RecordEstimatorBatch(
             for (const auto& path_id : destination_paths.second) {
                 if (LetflowRouting::GetOutPortFromPath(path_id, 0) == snapshot.outPort) {
                     fprintf(v5_estimator_output_,
-                            "%lu,%u,%u,%u,%u,%lu,%lu,%lu,%lu,%lu,%u,%.17g,%.17g,"
-                            "%lu,%lu,%lu,%u,%u,%lu\n",
+                            "%lu,%u,%u,%u,%u,%lu,%lu,%lu,%lu,%lu,%lu,%u,%.17g,%.17g,"
+                            "%lu,%lu,%lu,%u,%u,%lu,%lu,%u\n",
                             time_ns, switch_id, destination_paths.first, lane,
                             snapshot.outPort, snapshot.nominalBps, true_rate_bps,
                             snapshot.deltaBusyNs, snapshot.deltaDepartedBytes,
-                            snapshot.queueBytes, snapshot.sampleValid ? 1 : 0,
+                            snapshot.deltaBacklogEvents, snapshot.queueBytes,
+                            snapshot.sampleValid ? 1 : 0,
                             snapshot.rawCEffBps, snapshot.ewmaCEffBps,
                             snapshot.lastValidTimeNs, snapshot.sampleAgeNs,
                             snapshot.validSampleCount, snapshot.degradeRun,
-                            snapshot.degradedState ? 1 : 0, snapshot.estimateVersion);
+                            snapshot.degradedState ? 1 : 0, snapshot.estimateVersion,
+                            snapshot.sampleVersion, rate_transition ? 1 : 0);
                     emitted = true;
                 }
                 ++lane;
@@ -175,16 +184,18 @@ void SimulationMonitor::RecordEstimatorBatch(
         }
         if (!emitted) {
             fprintf(v5_estimator_output_,
-                    "%lu,%u,%u,%u,%u,%lu,%lu,%lu,%lu,%lu,%u,%.17g,%.17g,"
-                    "%lu,%lu,%lu,%u,%u,%lu\n",
+                    "%lu,%u,%u,%u,%u,%lu,%lu,%lu,%lu,%lu,%lu,%u,%.17g,%.17g,"
+                    "%lu,%lu,%lu,%u,%u,%lu,%lu,%u\n",
                     time_ns, switch_id, static_cast<uint32_t>(-1),
                     static_cast<uint32_t>(-1), snapshot.outPort, snapshot.nominalBps,
                     true_rate_bps, snapshot.deltaBusyNs, snapshot.deltaDepartedBytes,
-                    snapshot.queueBytes, snapshot.sampleValid ? 1 : 0,
+                    snapshot.deltaBacklogEvents, snapshot.queueBytes,
+                    snapshot.sampleValid ? 1 : 0,
                     snapshot.rawCEffBps, snapshot.ewmaCEffBps,
                     snapshot.lastValidTimeNs, snapshot.sampleAgeNs,
                     snapshot.validSampleCount, snapshot.degradeRun,
-                    snapshot.degradedState ? 1 : 0, snapshot.estimateVersion);
+                    snapshot.degradedState ? 1 : 0, snapshot.estimateVersion,
+                    snapshot.sampleVersion, rate_transition ? 1 : 0);
         }
     }
     fflush(v5_estimator_output_);

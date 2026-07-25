@@ -131,6 +131,7 @@ public:
    // c_eff = txBytes*8 / busyTime, gated offline on backlog (egress queue non-empty).
    uint64_t GetTxBusyTimeNs (void) const { return m_txBusyTimeNs; }
    uint64_t GetTxDepartedBytes (void) const { return m_txDepartedBytes; }
+   uint64_t GetTxBacklogEvents (void) const { return m_txBacklogEvents; }
    virtual bool IsQbb(void) const;
    void NewQp(Ptr<RdmaQueuePair> qp);
    void ReassignedQp(Ptr<RdmaQueuePair> qp);
@@ -171,6 +172,7 @@ public:
    // v4 residual-capacity estimator accumulators (see GetTxBusyTimeNs).
    uint64_t m_txBusyTimeNs = 0;     //< cumulative on-wire serialization time
    uint64_t m_txDepartedBytes = 0;  //< cumulative bytes serialized
+   uint64_t m_txBacklogEvents = 0;  //< packets arriving while egress was occupied
 
    Ptr<QbbChannel> m_channel;
 
