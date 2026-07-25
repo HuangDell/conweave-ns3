@@ -67,6 +67,9 @@ struct TrafficConfig {
     uint32_t v5_estimator_enable = 0;
     uint32_t v5_estimator_log = 0;
     uint32_t v5_estimator_stale_periods = 5;
+    uint64_t v5_probe_period_us = 0;
+    uint32_t v5_probe_bytes = 0;
+    uint64_t v5_binary_hold_us = 0;
 };
 
 struct CongestionControlConfig {

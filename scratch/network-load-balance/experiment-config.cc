@@ -114,6 +114,17 @@ bool LoadExperimentConfig(const std::string& path, ExperimentConfig* config) {
             conf >> config->traffic.v5_estimator_stale_periods;
             std::cerr << "V5_ESTIMATOR_STALE_PERIODS\t"
                       << config->traffic.v5_estimator_stale_periods << "\n";
+        } else if (key == "V5_PROBE_PERIOD_US") {
+            conf >> config->traffic.v5_probe_period_us;
+            std::cerr << "V5_PROBE_PERIOD_US\t\t" << config->traffic.v5_probe_period_us
+                      << "\n";
+        } else if (key == "V5_PROBE_BYTES") {
+            conf >> config->traffic.v5_probe_bytes;
+            std::cerr << "V5_PROBE_BYTES\t\t\t" << config->traffic.v5_probe_bytes << "\n";
+        } else if (key == "V5_BINARY_HOLD_US") {
+            conf >> config->traffic.v5_binary_hold_us;
+            std::cerr << "V5_BINARY_HOLD_US\t\t" << config->traffic.v5_binary_hold_us
+                      << "\n";
         } else if (key == "FLOWLET_SWITCH_OUTPUT_FILE") {
             conf >> config->io.flowlet_switch_output_file;
             std::cerr << "FLOWLET_SWITCH_OUTPUT_FILE\t\t"

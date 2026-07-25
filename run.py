@@ -81,6 +81,9 @@ V5_QP_STATE_LOG {v5_qp_state_log}
 V5_ESTIMATOR_ENABLE {v5_estimator_enable}
 V5_ESTIMATOR_LOG {v5_estimator_log}
 V5_ESTIMATOR_STALE_PERIODS {v5_estimator_stale_periods}
+V5_PROBE_PERIOD_US {v5_probe_period_us}
+V5_PROBE_BYTES {v5_probe_bytes}
+V5_BINARY_HOLD_US {v5_binary_hold_us}
 FLOWLET_SWITCH_OUTPUT_FILE mix/output/{id}/{id}_out_flowlet_switch.txt
 OOO_EVENT_OUTPUT_FILE mix/output/{id}/{id}_out_ooo_events.txt
 V5_CHUNK_OUTPUT_FILE mix/output/{id}/{id}_out_v5_chunk.txt
@@ -403,7 +406,7 @@ def main():
     parser.add_argument('--v5_oracle_policy', dest='v5_oracle_policy', action='store',
                         default='uniform', help="v5 G-new-a oracle policy: uniform/proportional/avoid (default: uniform)")
     parser.add_argument('--v5_policy', dest='v5_policy', action='store', default=None,
-                        help="v5 S3 policy: uniform/oracle-proportional/oracle-avoid/online-proportional")
+                        help="v5 policy: uniform/oracle-proportional/oracle-avoid/online-proportional/queue-ecn-binary")
     parser.add_argument('--v5_oracle_bad_spine', dest='v5_oracle_bad_spine', action='store', type=int,
                         default=0, help="v5 G-new-a: degraded spine node id for local bad-lane oracle (default: 0)")
     parser.add_argument('--v5_chunk_commit_rate_gbps', dest='v5_chunk_commit_rate_gbps', action='store', type=float,
@@ -424,6 +427,12 @@ def main():
                         default=0, help="v5 S3: log every estimator timer batch (default: 0)")
     parser.add_argument('--v5_estimator_stale_periods', dest='v5_estimator_stale_periods', action='store', type=int,
                         default=5, help="v5 S3: hold published weights after this many invalid periods (default: 5)")
+    parser.add_argument('--v5_probe_period_us', dest='v5_probe_period_us', action='store', type=int,
+                        default=0, help="v5 S4: recovery probe epoch in us; 0 disables probing (default: 0)")
+    parser.add_argument('--v5_probe_bytes', dest='v5_probe_bytes', action='store', type=int,
+                        default=0, help="v5 S4: maximum bytes assigned as one lane probe per epoch (default: 0)")
+    parser.add_argument('--v5_binary_hold_us', dest='v5_binary_hold_us', action='store', type=int,
+                        default=0, help="v5 S4: queue/ECN binary lane hold duration in us (default: 0)")
 
     # #### CONWEAVE PARAMETERS ####
     # parser.add_argument('--cwh_extra_reply_deadline', dest='cwh_extra_reply_deadline', action='store',
@@ -494,7 +503,10 @@ def main():
         "avoid": "oracle-avoid",
     }
     v5_policy = args.v5_policy or legacy_policy_map[args.v5_oracle_policy]
-    v5_policies = {"uniform", "oracle-proportional", "oracle-avoid", "online-proportional"}
+    v5_policies = {
+        "uniform", "oracle-proportional", "oracle-avoid", "online-proportional",
+        "queue-ecn-binary",
+    }
     if v5_policy not in v5_policies:
         raise Exception("CONFIG ERROR : unknown --v5_policy {}".format(v5_policy))
     if args.sflowlet_est_time_us <= 0:
@@ -511,8 +523,20 @@ def main():
         raise Exception("CONFIG ERROR : estimator enable/log must be 0 or 1")
     if args.v5_estimator_stale_periods < 1:
         raise Exception("CONFIG ERROR : --v5_estimator_stale_periods must be >= 1")
-    if v5_policy == "online-proportional" and not args.v5_estimator_enable:
-        raise Exception("CONFIG ERROR : online-proportional requires --v5_estimator_enable 1")
+    if args.v5_probe_period_us < 0 or args.v5_probe_bytes < 0:
+        raise Exception("CONFIG ERROR : S4 probe period/bytes must be >= 0")
+    if (args.v5_probe_period_us == 0) != (args.v5_probe_bytes == 0):
+        raise Exception(
+            "CONFIG ERROR : --v5_probe_period_us and --v5_probe_bytes must both be zero or both be positive")
+    if args.v5_probe_period_us and not args.v5_estimator_enable:
+        raise Exception("CONFIG ERROR : S4 recovery probe parameters require --v5_estimator_enable 1")
+    if args.v5_binary_hold_us < 0:
+        raise Exception("CONFIG ERROR : --v5_binary_hold_us must be >= 0")
+    if v5_policy == "queue-ecn-binary" and args.v5_binary_hold_us == 0:
+        raise Exception("CONFIG ERROR : queue-ecn-binary requires --v5_binary_hold_us > 0")
+    if v5_policy in {"online-proportional", "queue-ecn-binary"} and not args.v5_estimator_enable:
+        raise Exception(
+            "CONFIG ERROR : online-proportional and queue-ecn-binary require --v5_estimator_enable 1")
     if args.v5_estimator_log and not args.v5_estimator_enable:
         raise Exception("CONFIG ERROR : --v5_estimator_log 1 requires --v5_estimator_enable 1")
     if args.v5_chunk_bytes < 0:
@@ -527,10 +551,10 @@ def main():
         raise Exception("CONFIG ERROR : --v5_qp_pool_size must be >= 1")
     if args.v5_qp_pool and args.v5_qp_pool_size != args.v5_nsub:
         raise Exception("CONFIG ERROR : persistent pool currently requires --v5_qp_pool_size == --v5_nsub")
-    if v5_policy == "online-proportional" and (
+    if v5_policy in {"online-proportional", "queue-ecn-binary"} and (
             args.lb != "letflow" or not args.v5_qp_pool or args.v5_chunk_bytes <= 0):
         raise Exception(
-            "CONFIG ERROR : online-proportional requires --lb letflow, --v5_qp_pool 1, and --v5_chunk_bytes > 0")
+            "CONFIG ERROR : S4 policies require --lb letflow, --v5_qp_pool 1, and --v5_chunk_bytes > 0")
     if args.v5_wqe_log not in (0, 1) or args.v5_qp_state_log not in (0, 1):
         raise Exception("CONFIG ERROR : --v5_wqe_log and --v5_qp_state_log must be 0 or 1")
     if (args.v5_wqe_log or args.v5_qp_state_log) and not args.v5_qp_pool:
@@ -753,6 +777,9 @@ def main():
                                         v5_estimator_enable=args.v5_estimator_enable,
                                         v5_estimator_log=args.v5_estimator_log,
                                         v5_estimator_stale_periods=args.v5_estimator_stale_periods,
+                                        v5_probe_period_us=args.v5_probe_period_us,
+                                        v5_probe_bytes=args.v5_probe_bytes,
+                                        v5_binary_hold_us=args.v5_binary_hold_us,
                                         random_seed=args.seed)
     else:
         print("unknown cc:{}".format(args.cc))
@@ -802,8 +829,19 @@ def main():
             "sflowlet_degrade_ratio": args.sflowlet_degrade_ratio,
             "sflowlet_backlog_thresh_bytes": args.sflowlet_backlog_thresh_bytes,
             "v5_estimator_stale_periods": args.v5_estimator_stale_periods,
+            "v5_probe_period_us": args.v5_probe_period_us,
+            "v5_probe_bytes": args.v5_probe_bytes,
+            "v5_binary_hold_us": args.v5_binary_hold_us,
             "degrade_direction": args.degrade_direction,
+            "degrade_mode": args.degrade_mode,
+            "degrade_start_us": args.degrade_start_us,
+            "flap_period_us": args.flap_period_us,
+            "flap_frac_hi": args.flap_frac_hi,
             "link_degrade": link_degrade,
+            "link_degrade_events": [
+                {"time_us": t, "node_a": a, "node_b": b, "fraction": f}
+                for (t, a, b, f) in events
+            ] if args.degrade_link else [],
         },
     }
     write_json(manifest_path, manifest)

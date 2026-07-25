@@ -50,8 +50,23 @@ class TrafficScheduler {
         std::vector<double> capacities_bps;
         std::vector<double> weights;
         std::vector<double> deficits;
+        std::vector<uint32_t> binary_congested;
+        std::vector<uint64_t> binary_hold_until_ns;
         uint64_t estimate_version = 0;
         uint64_t estimate_age_ns = 0;
+        bool is_probe = false;
+        uint64_t probe_epoch = 0;
+        uint32_t probe_bytes = 0;
+        uint32_t probe_lane = static_cast<uint32_t>(-1);
+    };
+
+    struct LaneObservation {
+        uint32_t out_port = static_cast<uint32_t>(-1);
+        uint64_t nominal_bps = 0;
+        uint64_t queue_bytes = 0;
+        uint64_t sample_age_ns = 0;
+        uint64_t valid_sample_count = 0;
+        bool degraded_state = false;
     };
 
     struct ScheduledChunk {
@@ -72,12 +87,20 @@ class TrafficScheduler {
     uint32_t LaneOutPort(uint32_t source_tor, uint32_t destination_tor,
                          uint32_t lane) const;
     bool GetBadLane(uint32_t source, uint32_t destination, uint32_t* bad_lane,
-                    double* bad_fraction, double* degrade_time);
+                    double decision_time, double* bad_fraction, double* degrade_time);
     std::string EffectivePolicy() const;
+    void ApplyQueueEcnBinary(uint32_t source_tor, uint32_t destination_tor,
+                             const std::vector<LaneObservation>& observations,
+                             DecisionSignal* signal);
+    void MaybeSelectRecoveryProbe(uint32_t source_tor, uint32_t destination_tor,
+                                  uint32_t chunk_size,
+                                  const std::vector<LaneObservation>& observations,
+                                  DecisionSignal* signal);
     DecisionSignal BuildDecisionSignal(uint32_t source, uint32_t destination,
                                        const std::string& policy, bool has_bad_lane,
                                        uint32_t bad_lane, double bad_fraction,
-                                       double decision_time, double degrade_time);
+                                       double decision_time, double degrade_time,
+                                       uint32_t chunk_size);
     uint32_t SelectLane(uint32_t source, uint32_t destination, uint32_t chunk_size,
                         DecisionSignal* signal);
     void ScheduleV5Chunk(ScheduledChunk chunk);
@@ -109,6 +132,8 @@ class TrafficScheduler {
     std::map<uint64_t, std::vector<double>> oracle_lane_deficits_;
     std::map<uint64_t, std::vector<double>> online_published_capacities_;
     std::map<uint64_t, uint64_t> online_published_versions_;
+    std::map<uint64_t, std::vector<uint64_t>> last_probe_epochs_;
+    std::map<uint64_t, std::vector<uint64_t>> binary_hold_until_ns_;
     DecisionSignal current_decision_signal_;
     std::map<uint64_t, PersistentPoolEntry> persistent_pool_;
     double last_persistent_commit_time_ = 0.0;
