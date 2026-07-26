@@ -227,7 +227,8 @@ std::string TrafficScheduler::EffectivePolicy() const {
 void TrafficScheduler::ApplyQueueEcnBinary(
     uint32_t source_tor, uint32_t destination_tor,
     const std::vector<LaneObservation>& observations, DecisionSignal* signal) {
-    uint32_t lane_count = LaneCount();
+    uint32_t lane_count = observations.size();
+    NS_ASSERT_MSG(lane_count == LaneCount(), "binary observation count must match lanes");
     uint64_t key = LaneCounterKey(source_tor, destination_tor);
     std::vector<uint64_t>& holds = binary_hold_until_ns_[key];
     if (holds.size() != lane_count) {
@@ -259,6 +260,49 @@ void TrafficScheduler::ApplyQueueEcnBinary(
     if (available == 0) {
         for (uint32_t lane = 0; lane < lane_count; ++lane) {
             signal->capacities_bps[lane] = observations[lane].nominal_bps;
+        }
+    }
+}
+
+void TrafficScheduler::ApplySeqBalanceBinary(
+    uint32_t source, uint32_t destination, uint32_t pg,
+    const std::vector<LaneObservation>& observations, DecisionSignal* signal) {
+    uint32_t lane_count = observations.size();
+    NS_ASSERT_MSG(lane_count == LaneCount(), "SeqBalance observation count must match lanes");
+    uint64_t now_ns = Simulator::Now().GetNanoSeconds();
+    uint64_t phi_ns = config_.traffic.v5_seqbalance_phi_us * 1000;
+    uint32_t available = 0;
+    std::vector<double> nominal_capacities = signal->capacities_bps;
+    for (uint32_t lane = 0; lane < lane_count; ++lane) {
+        uint64_t cnp_count = 0;
+        uint64_t last_cnp_ns = 0;
+        auto entry = persistent_pool_.find(PersistentPoolKey(source, destination, pg, lane));
+        if (entry != persistent_pool_.end()) {
+            Ptr<RdmaDriver> driver = state_.nodes.Get(source)->GetObject<RdmaDriver>();
+            Ptr<RdmaQueuePair> qp = driver->m_rdma->GetQp(entry->second.qp_key);
+            if (qp) {
+                cnp_count = qp->m_v5_ecn_cnp_count;
+                last_cnp_ns = qp->m_v5_last_ecn_cnp_ns;
+            }
+        }
+        uint64_t hold_until = last_cnp_ns == 0 ? 0 : last_cnp_ns + phi_ns;
+        bool inactive = now_ns < hold_until;
+        signal->seqbalance_cnp_counts[lane] = cnp_count;
+        signal->seqbalance_last_cnp_ns[lane] = last_cnp_ns;
+        signal->binary_congested[lane] = inactive ? 1 : 0;
+        signal->binary_hold_until_ns[lane] = hold_until;
+        signal->capacities_bps[lane] = inactive ? 0.0 : nominal_capacities[lane];
+        available += inactive ? 0 : 1;
+    }
+
+    if (available == 0) {
+        signal->binary_all_inactive_fallback = true;
+        uint64_t earliest = *std::min_element(signal->binary_hold_until_ns.begin(),
+                                              signal->binary_hold_until_ns.end());
+        for (uint32_t lane = 0; lane < lane_count; ++lane) {
+            if (signal->binary_hold_until_ns[lane] == earliest) {
+                signal->capacities_bps[lane] = nominal_capacities[lane];
+            }
         }
     }
 }
@@ -309,7 +353,8 @@ void TrafficScheduler::MaybeSelectRecoveryProbe(
 }
 
 TrafficScheduler::DecisionSignal TrafficScheduler::BuildDecisionSignal(
-    uint32_t source, uint32_t destination, const std::string& policy, bool has_bad_lane,
+    uint32_t source, uint32_t destination, uint32_t pg, const std::string& policy,
+    bool has_bad_lane,
     uint32_t bad_lane, double bad_fraction, double decision_time, double degrade_time,
     uint32_t chunk_size) {
     uint32_t source_tor = Settings::hostIp2SwitchId[state_.server_addresses[source].Get()];
@@ -321,6 +366,8 @@ TrafficScheduler::DecisionSignal TrafficScheduler::BuildDecisionSignal(
     signal.weights.assign(lane_count, 1.0);
     signal.binary_congested.assign(lane_count, 0);
     signal.binary_hold_until_ns.assign(lane_count, 0);
+    signal.seqbalance_cnp_counts.assign(lane_count, 0);
+    signal.seqbalance_last_cnp_ns.assign(lane_count, 0);
     signal.published_versions.assign(lane_count, 0);
     signal.publication_sources.assign(lane_count, kHealthyNominal);
     signal.sample_ages_ns.assign(lane_count, 0);
@@ -438,6 +485,8 @@ TrafficScheduler::DecisionSignal TrafficScheduler::BuildDecisionSignal(
         signal.estimate_version = published_epoch;
     } else if (policy == "queue-ecn-binary") {
         ApplyQueueEcnBinary(source_tor, destination_tor, observations, &signal);
+    } else if (policy == "seqbalance-style") {
+        ApplySeqBalanceBinary(source, destination, pg, observations, &signal);
     }
 
     if (policy == "online-proportional") {
@@ -447,6 +496,16 @@ TrafficScheduler::DecisionSignal TrafficScheduler::BuildDecisionSignal(
 
     if (policy == "uniform") {
         signal.weights.assign(lane_count, 1.0 / lane_count);
+    } else if (policy == "seqbalance-style") {
+        uint32_t active = std::count_if(
+            signal.capacities_bps.begin(), signal.capacities_bps.end(),
+            [](double capacity) { return capacity > 0.0; });
+        NS_ASSERT_MSG(active > 0, "SeqBalance-style must retain a fallback lane");
+        for (uint32_t lane = 0; lane < lane_count; ++lane) {
+            signal.weights[lane] = signal.capacities_bps[lane] > 0.0
+                                       ? 1.0 / active
+                                       : 0.0;
+        }
     } else {
         double capacity_sum = 0.0;
         for (double capacity : signal.capacities_bps) {
@@ -551,7 +610,7 @@ void TrafficScheduler::ScheduleV5Chunk(ScheduledChunk chunk) {
                        &degrade_time);
     }
     current_decision_signal_ = BuildDecisionSignal(
-        source, destination, policy, has_bad_lane, bad_lane, bad_fraction,
+        source, destination, pg, policy, has_bad_lane, bad_lane, bad_fraction,
         decision_time, degrade_time, bytes);
     uint32_t lane = SelectLane(source, destination, bytes, &current_decision_signal_);
     InstallRdmaSubflow(app_id, pg, source, destination, bytes, decision_time,
@@ -634,6 +693,8 @@ void TrafficScheduler::InstallRdmaSubflow(uint32_t app_id, uint32_t pg,
         std::ostringstream publication_sources;
         std::ostringstream sample_ages;
         std::ostringstream degraded_states;
+        std::ostringstream seqbalance_cnp_counts;
+        std::ostringstream seqbalance_last_cnp;
         for (uint32_t current_lane = 0; current_lane < LaneCount(); ++current_lane) {
             if (current_lane > 0) {
                 binary_congested << ';';
@@ -642,6 +703,8 @@ void TrafficScheduler::InstallRdmaSubflow(uint32_t app_id, uint32_t pg,
                 publication_sources << ';';
                 sample_ages << ';';
                 degraded_states << ';';
+                seqbalance_cnp_counts << ';';
+                seqbalance_last_cnp << ';';
             }
             binary_congested << current_decision_signal_.binary_congested[current_lane];
             binary_hold_until << current_decision_signal_.binary_hold_until_ns[current_lane];
@@ -649,10 +712,12 @@ void TrafficScheduler::InstallRdmaSubflow(uint32_t app_id, uint32_t pg,
             publication_sources << current_decision_signal_.publication_sources[current_lane];
             sample_ages << current_decision_signal_.sample_ages_ns[current_lane];
             degraded_states << current_decision_signal_.degraded_states[current_lane];
+            seqbalance_cnp_counts << current_decision_signal_.seqbalance_cnp_counts[current_lane];
+            seqbalance_last_cnp << current_decision_signal_.seqbalance_last_cnp_ns[current_lane];
         }
         fprintf(chunk_output,
                 "%u %u %u %u %u %u %u %lu %u %s %u %u %lu %u %u %u %lu %s %s %s %lu "
-                "%u %lu %u %u %s %s %s %s %u %s %s\n",
+                "%u %lu %u %u %s %s %s %s %u %s %s %s %s %u\n",
                 app_id, chunk_id, source, destination, source_port, destination_port,
                 bytes, start_ns,
                 pin_lane ? lane : static_cast<uint32_t>(-1), policy.c_str(),
@@ -668,7 +733,9 @@ void TrafficScheduler::InstallRdmaSubflow(uint32_t app_id, uint32_t pg,
                 binary_congested.str().c_str(), binary_hold_until.str().c_str(),
                 published_versions.str().c_str(), publication_sources.str().c_str(),
                 current_decision_signal_.publication_changed ? 1 : 0,
-                sample_ages.str().c_str(), degraded_states.str().c_str());
+                sample_ages.str().c_str(), degraded_states.str().c_str(),
+                seqbalance_cnp_counts.str().c_str(), seqbalance_last_cnp.str().c_str(),
+                current_decision_signal_.binary_all_inactive_fallback ? 1 : 0);
         fflush(chunk_output);
     }
 
@@ -836,7 +903,8 @@ void TrafficScheduler::ScheduleFlowInputs() {
             uint32_t base_length = target_length / subflow_count;
             uint32_t remainder = target_length % subflow_count;
             current_decision_signal_ = BuildDecisionSignal(
-                source, destination, "uniform", false, static_cast<uint32_t>(-1), 1.0,
+                source, destination, priority_group, "uniform", false,
+                static_cast<uint32_t>(-1), 1.0,
                 Simulator::Now().GetSeconds(), std::numeric_limits<double>::max(), 0);
             for (uint32_t i = 0; i < subflow_count; ++i) {
                 uint32_t subflow_length = base_length + (i == subflow_count - 1 ? remainder : 0);

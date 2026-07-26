@@ -642,6 +642,8 @@ int RdmaHw::ReceiveAck(Ptr<Packet> p, CustomHeader &ch) {
 
     // handle cnp
     if (cnp) {
+        ++qp->m_v5_ecn_cnp_count;
+        qp->m_v5_last_ecn_cnp_ns = Simulator::Now().GetNanoSeconds();
         if (m_cc_mode == 1) {  // mlx version
             cnp_received_mlx(qp);
         }

@@ -88,6 +88,8 @@ class RdmaQueuePair : public Object {
     uint32_t m_v5_lane;
     uint64_t m_expected_wqes;
     uint64_t m_completed_wqes;
+    uint64_t m_v5_ecn_cnp_count;
+    uint64_t m_v5_last_ecn_cnp_ns;
     std::deque<WqeBoundary> m_wqe_boundaries;
 
     /******************************

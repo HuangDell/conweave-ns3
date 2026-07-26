@@ -84,6 +84,7 @@ V5_ESTIMATOR_STALE_PERIODS {v5_estimator_stale_periods}
 V5_PROBE_PERIOD_US {v5_probe_period_us}
 V5_PROBE_BYTES {v5_probe_bytes}
 V5_BINARY_HOLD_US {v5_binary_hold_us}
+V5_SEQBALANCE_PHI_US {v5_seqbalance_phi_us}
 FLOWLET_SWITCH_OUTPUT_FILE mix/output/{id}/{id}_out_flowlet_switch.txt
 OOO_EVENT_OUTPUT_FILE mix/output/{id}/{id}_out_ooo_events.txt
 V5_CHUNK_OUTPUT_FILE mix/output/{id}/{id}_out_v5_chunk.txt
@@ -406,7 +407,7 @@ def main():
     parser.add_argument('--v5_oracle_policy', dest='v5_oracle_policy', action='store',
                         default='uniform', help="v5 G-new-a oracle policy: uniform/proportional/avoid (default: uniform)")
     parser.add_argument('--v5_policy', dest='v5_policy', action='store', default=None,
-                        help="v5 policy: uniform/oracle-proportional/oracle-avoid/online-proportional/queue-ecn-binary")
+                        help="v5 policy: uniform/oracle-proportional/oracle-avoid/online-proportional/seqbalance-style/queue-ecn-binary")
     parser.add_argument('--v5_oracle_bad_spine', dest='v5_oracle_bad_spine', action='store', type=int,
                         default=0, help="v5 G-new-a: degraded spine node id for local bad-lane oracle (default: 0)")
     parser.add_argument('--v5_chunk_commit_rate_gbps', dest='v5_chunk_commit_rate_gbps', action='store', type=float,
@@ -433,6 +434,9 @@ def main():
                         default=0, help="v5 S4: maximum bytes assigned as one lane probe per epoch (default: 0)")
     parser.add_argument('--v5_binary_hold_us', dest='v5_binary_hold_us', action='store', type=int,
                         default=0, help="v5 S4: queue/ECN binary lane hold duration in us (default: 0)")
+    parser.add_argument('--v5_seqbalance_phi_us', dest='v5_seqbalance_phi_us', action='store',
+                        type=int, default=32,
+                        help="v5 S5: SeqBalance-style ECN/CNP inactive duration phi in us (default: 32)")
 
     # #### CONWEAVE PARAMETERS ####
     # parser.add_argument('--cwh_extra_reply_deadline', dest='cwh_extra_reply_deadline', action='store',
@@ -505,7 +509,7 @@ def main():
     v5_policy = args.v5_policy or legacy_policy_map[args.v5_oracle_policy]
     v5_policies = {
         "uniform", "oracle-proportional", "oracle-avoid", "online-proportional",
-        "queue-ecn-binary",
+        "queue-ecn-binary", "seqbalance-style",
     }
     if v5_policy not in v5_policies:
         raise Exception("CONFIG ERROR : unknown --v5_policy {}".format(v5_policy))
@@ -534,6 +538,8 @@ def main():
         raise Exception("CONFIG ERROR : --v5_binary_hold_us must be >= 0")
     if v5_policy == "queue-ecn-binary" and args.v5_binary_hold_us == 0:
         raise Exception("CONFIG ERROR : queue-ecn-binary requires --v5_binary_hold_us > 0")
+    if args.v5_seqbalance_phi_us <= 0:
+        raise Exception("CONFIG ERROR : --v5_seqbalance_phi_us must be > 0")
     if v5_policy in {"online-proportional", "queue-ecn-binary"} and not args.v5_estimator_enable:
         raise Exception(
             "CONFIG ERROR : online-proportional and queue-ecn-binary require --v5_estimator_enable 1")
@@ -551,10 +557,10 @@ def main():
         raise Exception("CONFIG ERROR : --v5_qp_pool_size must be >= 1")
     if args.v5_qp_pool and args.v5_qp_pool_size != args.v5_nsub:
         raise Exception("CONFIG ERROR : persistent pool currently requires --v5_qp_pool_size == --v5_nsub")
-    if v5_policy in {"online-proportional", "queue-ecn-binary"} and (
+    if v5_policy in {"online-proportional", "queue-ecn-binary", "seqbalance-style"} and (
             args.lb != "letflow" or not args.v5_qp_pool or args.v5_chunk_bytes <= 0):
         raise Exception(
-            "CONFIG ERROR : S4 policies require --lb letflow, --v5_qp_pool 1, and --v5_chunk_bytes > 0")
+            "CONFIG ERROR : online/binary policies require --lb letflow, --v5_qp_pool 1, and --v5_chunk_bytes > 0")
     if args.v5_wqe_log not in (0, 1) or args.v5_qp_state_log not in (0, 1):
         raise Exception("CONFIG ERROR : --v5_wqe_log and --v5_qp_state_log must be 0 or 1")
     if (args.v5_wqe_log or args.v5_qp_state_log) and not args.v5_qp_pool:
@@ -780,6 +786,7 @@ def main():
                                         v5_probe_period_us=args.v5_probe_period_us,
                                         v5_probe_bytes=args.v5_probe_bytes,
                                         v5_binary_hold_us=args.v5_binary_hold_us,
+                                        v5_seqbalance_phi_us=args.v5_seqbalance_phi_us,
                                         random_seed=args.seed)
     else:
         print("unknown cc:{}".format(args.cc))
@@ -832,6 +839,7 @@ def main():
             "v5_probe_period_us": args.v5_probe_period_us,
             "v5_probe_bytes": args.v5_probe_bytes,
             "v5_binary_hold_us": args.v5_binary_hold_us,
+            "v5_seqbalance_phi_us": args.v5_seqbalance_phi_us,
             "degrade_direction": args.degrade_direction,
             "degrade_mode": args.degrade_mode,
             "degrade_start_us": args.degrade_start_us,

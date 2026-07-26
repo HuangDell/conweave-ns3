@@ -70,6 +70,7 @@ struct TrafficConfig {
     uint64_t v5_probe_period_us = 0;
     uint32_t v5_probe_bytes = 0;
     uint64_t v5_binary_hold_us = 0;
+    uint64_t v5_seqbalance_phi_us = 32;
 };
 
 struct CongestionControlConfig {

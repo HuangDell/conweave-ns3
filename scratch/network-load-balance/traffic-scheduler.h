@@ -58,6 +58,8 @@ class TrafficScheduler {
         std::vector<double> deficits;
         std::vector<uint32_t> binary_congested;
         std::vector<uint64_t> binary_hold_until_ns;
+        std::vector<uint64_t> seqbalance_cnp_counts;
+        std::vector<uint64_t> seqbalance_last_cnp_ns;
         std::vector<uint64_t> published_versions;
         std::vector<uint32_t> publication_sources;
         std::vector<uint64_t> sample_ages_ns;
@@ -69,6 +71,7 @@ class TrafficScheduler {
         uint64_t probe_epoch = 0;
         uint32_t probe_bytes = 0;
         uint32_t probe_lane = static_cast<uint32_t>(-1);
+        bool binary_all_inactive_fallback = false;
     };
 
     struct LaneObservation {
@@ -103,11 +106,14 @@ class TrafficScheduler {
     void ApplyQueueEcnBinary(uint32_t source_tor, uint32_t destination_tor,
                              const std::vector<LaneObservation>& observations,
                              DecisionSignal* signal);
+    void ApplySeqBalanceBinary(uint32_t source, uint32_t destination, uint32_t pg,
+                               const std::vector<LaneObservation>& observations,
+                               DecisionSignal* signal);
     void MaybeSelectRecoveryProbe(uint32_t source_tor, uint32_t destination_tor,
                                   uint32_t chunk_size,
                                   const std::vector<LaneObservation>& observations,
                                   DecisionSignal* signal);
-    DecisionSignal BuildDecisionSignal(uint32_t source, uint32_t destination,
+    DecisionSignal BuildDecisionSignal(uint32_t source, uint32_t destination, uint32_t pg,
                                        const std::string& policy, bool has_bad_lane,
                                        uint32_t bad_lane, double bad_fraction,
                                        double decision_time, double degrade_time,

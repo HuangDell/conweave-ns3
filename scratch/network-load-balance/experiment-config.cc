@@ -125,6 +125,10 @@ bool LoadExperimentConfig(const std::string& path, ExperimentConfig* config) {
             conf >> config->traffic.v5_binary_hold_us;
             std::cerr << "V5_BINARY_HOLD_US\t\t" << config->traffic.v5_binary_hold_us
                       << "\n";
+        } else if (key == "V5_SEQBALANCE_PHI_US") {
+            conf >> config->traffic.v5_seqbalance_phi_us;
+            std::cerr << "V5_SEQBALANCE_PHI_US\t\t"
+                      << config->traffic.v5_seqbalance_phi_us << "\n";
         } else if (key == "FLOWLET_SWITCH_OUTPUT_FILE") {
             conf >> config->io.flowlet_switch_output_file;
             std::cerr << "FLOWLET_SWITCH_OUTPUT_FILE\t\t"
