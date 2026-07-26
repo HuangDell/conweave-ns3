@@ -325,6 +325,10 @@ TrafficScheduler::DecisionSignal TrafficScheduler::BuildDecisionSignal(
     signal.publication_sources.assign(lane_count, kHealthyNominal);
     signal.sample_ages_ns.assign(lane_count, 0);
     signal.degraded_states.assign(lane_count, 0);
+    if (source_tor == destination_tor) {
+        signal.weights.assign(lane_count, 1.0 / lane_count);
+        return signal;
+    }
     auto switch_iterator = state_.tor_by_id.find(source_tor);
     NS_ASSERT_MSG(switch_iterator != state_.tor_by_id.end(), "source ToR is missing");
     ResidualCapacityEstimator& estimator =
