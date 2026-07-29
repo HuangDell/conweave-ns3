@@ -119,6 +119,8 @@ struct MonitoringConfig {
     uint64_t cnp_bucket_ns = 100000;
     uint64_t irn_start_ns = 0;
     uint64_t irn_bucket_ns = 100000;
+    uint32_t native_diag_log = 0;
+    uint64_t native_diag_interval_ns = 10000;
 };
 
 struct IoConfig {
@@ -141,6 +143,8 @@ struct IoConfig {
     std::string v5_wqe_output_file = "v5_wqe.txt";
     std::string v5_qp_state_output_file = "v5_qp_state.txt";
     std::string v5_estimator_output_file = "v5_estimator.csv";
+    std::string native_path_counter_output_file = "native_path_counter.csv";
+    std::string native_event_output_file = "native_events.csv";
 };
 
 struct LinkDegradeEvent {

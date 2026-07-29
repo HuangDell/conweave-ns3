@@ -86,8 +86,8 @@ int main(int argc, char* argv[]) {
     monitor.StartCompletionMonitoring(traffic.TargetCompletionCount());
     Simulator::Stop(Seconds(config.flowgen_stop_time + 10.0));
     Simulator::Run();
-    Simulator::Destroy();
     monitor.CloseOutputs();
+    Simulator::Destroy();
 
     NS_LOG_INFO("Total number of packets: " << RdmaHw::nAllPkts);
     NS_LOG_INFO("Done.");

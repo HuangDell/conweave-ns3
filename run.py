@@ -85,6 +85,10 @@ V5_PROBE_PERIOD_US {v5_probe_period_us}
 V5_PROBE_BYTES {v5_probe_bytes}
 V5_BINARY_HOLD_US {v5_binary_hold_us}
 V5_SEQBALANCE_PHI_US {v5_seqbalance_phi_us}
+NATIVE_DIAG_LOG {native_diag_log}
+NATIVE_DIAG_INTERVAL_NS {native_diag_interval_ns}
+NATIVE_PATH_COUNTER_OUTPUT_FILE mix/output/{id}/{id}_out_native_path_counter.csv
+NATIVE_EVENT_OUTPUT_FILE mix/output/{id}/{id}_out_native_events.csv
 FLOWLET_SWITCH_OUTPUT_FILE mix/output/{id}/{id}_out_flowlet_switch.txt
 OOO_EVENT_OUTPUT_FILE mix/output/{id}/{id}_out_ooo_events.txt
 V5_CHUNK_OUTPUT_FILE mix/output/{id}/{id}_out_v5_chunk.txt
@@ -275,6 +279,41 @@ def sha256_file(path):
     return digest.hexdigest()
 
 
+def runtime_binary_metadata(path):
+    absolute_binary = os.path.abspath(path)
+    build_root = os.path.abspath(SIM_BUILD_DIR)
+    sim_env, _, _ = direct_run_env()
+    artifacts = {absolute_binary}
+    if sys.platform.startswith("linux"):
+        output = subprocess.check_output(
+            ["ldd", absolute_binary], text=True, env=sim_env, stderr=subprocess.STDOUT)
+        for line in output.splitlines():
+            fields = line.strip().split()
+            candidate = None
+            if len(fields) >= 3 and fields[1] == "=>" and fields[2].startswith("/"):
+                candidate = fields[2]
+            elif fields and fields[0].startswith("/"):
+                candidate = fields[0]
+            if candidate and os.path.commonpath([os.path.abspath(candidate), build_root]) == build_root:
+                artifacts.add(os.path.abspath(candidate))
+    records = [
+        {"absolute_path": artifact, "sha256": sha256_file(artifact)}
+        for artifact in sorted(artifacts)
+    ]
+    combined = hashlib.sha256()
+    for record in records:
+        combined.update(os.path.basename(record["absolute_path"]).encode("utf-8"))
+        combined.update(b"\0")
+        combined.update(record["sha256"].encode("ascii"))
+        combined.update(b"\n")
+    return {
+        "absolute_path": absolute_binary,
+        "sha256": sha256_file(absolute_binary),
+        "runtime_sha256": combined.hexdigest(),
+        "runtime_artifacts": records,
+    }
+
+
 def git_metadata():
     try:
         commit = subprocess.check_output(
@@ -437,6 +476,12 @@ def main():
     parser.add_argument('--v5_seqbalance_phi_us', dest='v5_seqbalance_phi_us', action='store',
                         type=int, default=32,
                         help="v5 S5: SeqBalance-style ECN/CNP inactive duration phi in us (default: 32)")
+    parser.add_argument('--native_diag_log', dest='native_diag_log', action='store', type=int,
+                        default=0,
+                        help="enable native LB path counters and event diagnostics (default: 0)")
+    parser.add_argument('--native_diag_interval_ns', dest='native_diag_interval_ns',
+                        action='store', type=int, default=10000,
+                        help="native LB path-counter sampling interval in ns (default: 10000)")
 
     # #### CONWEAVE PARAMETERS ####
     # parser.add_argument('--cwh_extra_reply_deadline', dest='cwh_extra_reply_deadline', action='store',
@@ -540,6 +585,14 @@ def main():
         raise Exception("CONFIG ERROR : queue-ecn-binary requires --v5_binary_hold_us > 0")
     if args.v5_seqbalance_phi_us <= 0:
         raise Exception("CONFIG ERROR : --v5_seqbalance_phi_us must be > 0")
+    if args.native_diag_log not in (0, 1):
+        raise Exception("CONFIG ERROR : --native_diag_log must be 0 or 1")
+    if args.native_diag_interval_ns <= 0:
+        raise Exception("CONFIG ERROR : --native_diag_interval_ns must be > 0")
+    if args.native_diag_log and args.lb not in {"conga", "letflow", "conweave"}:
+        raise Exception("CONFIG ERROR : native diagnostics require conga, letflow, or conweave")
+    if args.native_diag_log and args.v5_qp_pool:
+        raise Exception("CONFIG ERROR : native diagnostics require the native non-v5 substrate")
     if v5_policy in {"online-proportional", "queue-ecn-binary"} and not args.v5_estimator_enable:
         raise Exception(
             "CONFIG ERROR : online-proportional and queue-ecn-binary require --v5_estimator_enable 1")
@@ -787,6 +840,8 @@ def main():
                                         v5_probe_bytes=args.v5_probe_bytes,
                                         v5_binary_hold_us=args.v5_binary_hold_us,
                                         v5_seqbalance_phi_us=args.v5_seqbalance_phi_us,
+                                        native_diag_log=args.native_diag_log,
+                                        native_diag_interval_ns=args.native_diag_interval_ns,
                                         random_seed=args.seed)
     else:
         print("unknown cc:{}".format(args.cc))
@@ -796,14 +851,14 @@ def main():
 
     manifest_path = os.path.join(output_dir, "run_manifest.json")
     manifest = {
-        "schema_version": 1,
+        "schema_version": 2,
         "run_id": config_ID,
         "status": "prepared",
         "created_at": datetime.now().astimezone().isoformat(),
         "git": git_metadata(),
-        "binary": {
-            "absolute_path": os.path.abspath(SIM_BINARY),
-            "sha256": sha256_file(SIM_BINARY) if exists(SIM_BINARY) else None,
+        "binary": runtime_binary_metadata(SIM_BINARY) if exists(SIM_BINARY) else {
+            "absolute_path": os.path.abspath(SIM_BINARY), "sha256": None,
+            "runtime_sha256": None, "runtime_artifacts": [],
         },
         "trace": trace_metadata,
         "config": {
@@ -840,6 +895,8 @@ def main():
             "v5_probe_bytes": args.v5_probe_bytes,
             "v5_binary_hold_us": args.v5_binary_hold_us,
             "v5_seqbalance_phi_us": args.v5_seqbalance_phi_us,
+            "native_diag_log": args.native_diag_log,
+            "native_diag_interval_ns": args.native_diag_interval_ns,
             "degrade_direction": args.degrade_direction,
             "degrade_mode": args.degrade_mode,
             "degrade_start_us": args.degrade_start_us,
@@ -896,10 +953,14 @@ def main():
         flowgen_stop_time * 1e9) + int(0.05 * 1e9)  # extra term
 
     print("Analyzing output FCT...")
-    print("python3 fctAnalysis.py -id {config_ID} -dir {dir} -bdp {bdp} -sT {fct_analysis_time_limit_begin} -fT {fct_analysistime_limit_end} > /dev/null 2>&1".format(
-        config_ID=config_ID, dir=os.getcwd(), bdp=bdp, fct_analysis_time_limit_begin=fct_analysis_time_limit_begin, fct_analysistime_limit_end=fct_analysistime_limit_end))
-    os.system("python3 fctAnalysis.py -id {config_ID} -dir {dir} -bdp {bdp} -sT {fct_analysis_time_limit_begin} -fT {fct_analysistime_limit_end} > /dev/null 2>&1".format(
-        config_ID=config_ID, dir=os.getcwd(), bdp=bdp, fct_analysis_time_limit_begin=fct_analysis_time_limit_begin, fct_analysistime_limit_end=fct_analysistime_limit_end))
+    fct_command = [
+        sys.executable, "fctAnalysis.py", "-id", config_ID, "-dir", os.getcwd(),
+        "-bdp", str(bdp), "-sT", str(fct_analysis_time_limit_begin),
+        "-fT", str(fct_analysistime_limit_end),
+    ]
+    print(" ".join(fct_command) + " > /dev/null 2>&1")
+    subprocess.run(fct_command, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT,
+                   check=False)
 
     if lb_mode == 9: # ConWeave Logging
         ################################################################
@@ -910,11 +971,14 @@ def main():
             flowgen_start_time * 1e9) + int(0.005 * 1e9)  # warmup
         queue_analysistime_limit_end = int(flowgen_stop_time * 1e9)
         print("Analyzing output Queue...")
-        print("python3 queueAnalysis.py -id {config_ID} -dir {dir} -sT {queue_analysis_time_limit_begin} -fT {queue_analysistime_limit_end} > /dev/null 2>&1".format(
-            config_ID=config_ID, dir=os.getcwd(), queue_analysis_time_limit_begin=queue_analysis_time_limit_begin, queue_analysistime_limit_end=queue_analysistime_limit_end))
-        os.system("python3 queueAnalysis.py -id {config_ID} -dir {dir} -sT {queue_analysis_time_limit_begin} -fT {queue_analysistime_limit_end} > /dev/null 2>&1".format(
-            config_ID=config_ID, dir=os.getcwd(), queue_analysis_time_limit_begin=queue_analysis_time_limit_begin, queue_analysistime_limit_end=queue_analysistime_limit_end,
-            monitoringInterval=sw_monitoring_interval))  # TODO: parameterize
+        queue_command = [
+            sys.executable, "queueAnalysis.py", "-id", config_ID, "-dir", os.getcwd(),
+            "-sT", str(queue_analysis_time_limit_begin),
+            "-fT", str(queue_analysistime_limit_end),
+        ]
+        print(" ".join(queue_command) + " > /dev/null 2>&1")
+        subprocess.run(queue_command, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT,
+                       check=False)
 
     print("\n\n============== Done ============== ")
 

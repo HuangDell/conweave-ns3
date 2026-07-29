@@ -25,6 +25,7 @@
 #include "ns3/event-id.h"
 #include "ns3/ipv4-header.h"
 #include "ns3/log.h"
+#include "ns3/native-path-diagnostics.h"
 #include "ns3/nstime.h"
 #include "ns3/object.h"
 #include "ns3/packet.h"
@@ -234,10 +235,13 @@ void CongaRouting::RouteInput(Ptr<Packet> p, CustomHeader ch) {
                         GetOutPortFromPath(selectedPath, 0);      // sender switch is 0th hop
                     uint32_t X = UpdateLocalDre(p, ch, outPort);  // update
                     uint32_t localCe = QuantizingX(outPort, X);   // quantize
+                    RecordLocalSignalIfChanged(ch, srcToRId, dstToRId, selectedPath, localCe);
                     congaTag.SetCe(localCe);
                     congaTag.SetPathId(selectedPath);
 
                     p->AddPacketTag(congaTag);
+                    NativePathDiagnostics::RecordAssignment(p, ch, srcToRId, dstToRId,
+                                                            selectedPath);
                     NS_LOG_FUNCTION("SenderToR" << m_switch_id << "Flowlet exists"
                                                 << "Path/CE/outPort" << selectedPath
                                                 << congaTag.GetCe() << outPort << "FbPath/Metric"
@@ -251,6 +255,8 @@ void CongaRouting::RouteInput(Ptr<Packet> p, CustomHeader ch) {
 
                 /*---- Flowlet Timeout ----*/
                 // NS_LOG_FUNCTION("Flowlet expires, calculate the new port");
+                uint32_t oldPath = flowlet->_PathId;
+                uint64_t idleGapNs = (now - flowlet->_activeTime).GetNanoSeconds();
                 selectedPath = GetBestPath(dstToRId, 4);
                 CongaRouting::nFlowletTimeout++;
 
@@ -264,11 +270,21 @@ void CongaRouting::RouteInput(Ptr<Packet> p, CustomHeader ch) {
                 uint32_t outPort = GetOutPortFromPath(selectedPath, 0);
                 uint32_t X = UpdateLocalDre(p, ch, outPort);  // update
                 uint32_t localCe = QuantizingX(outPort, X);   // quantize
+                RecordLocalSignalIfChanged(ch, srcToRId, dstToRId, selectedPath, localCe);
                 congaTag.SetCe(localCe);
                 congaTag.SetPathId(selectedPath);
                 congaTag.SetHopCount(0);
 
                 p->AddPacketTag(congaTag);
+                NativePathDiagnostics::RecordEvent(
+                    srcToRId, dstToRId, ch, "flowlet_timeout", oldPath,
+                    selectedPath, idleGapNs, "idle_gap");
+                NativePathDiagnostics::RecordEvent(srcToRId, dstToRId, ch, "path_select",
+                                                   oldPath, selectedPath, localCe,
+                                                   "flowlet_timeout");
+                NativePathDiagnostics::RecordDecision(srcToRId, dstToRId, selectedPath);
+                NativePathDiagnostics::RecordAssignment(p, ch, srcToRId, dstToRId,
+                                                        selectedPath);
                 NS_LOG_FUNCTION("SenderToR" << m_switch_id << "Flowlet exists & Timeout"
                                             << "Path/CE/outPort" << selectedPath << congaTag.GetCe()
                                             << outPort << "FbPath/Metric" << congaTag.GetFbPathId()
@@ -290,10 +306,18 @@ void CongaRouting::RouteInput(Ptr<Packet> p, CustomHeader ch) {
             uint32_t outPort = GetOutPortFromPath(selectedPath, 0);
             uint32_t X = UpdateLocalDre(p, ch, outPort);  // update
             uint32_t localCe = QuantizingX(outPort, X);   // quantize
+            RecordLocalSignalIfChanged(ch, srcToRId, dstToRId, selectedPath, localCe);
             congaTag.SetCe(localCe);
             congaTag.SetPathId(selectedPath);
 
             p->AddPacketTag(congaTag);
+            NativePathDiagnostics::RecordEvent(srcToRId, dstToRId, ch, "flow_start", -1,
+                                               selectedPath, localCe, "new_flow");
+            NativePathDiagnostics::RecordEvent(srcToRId, dstToRId, ch, "path_select", -1,
+                                               selectedPath, localCe, "new_flow");
+            NativePathDiagnostics::RecordDecision(srcToRId, dstToRId, selectedPath);
+            NativePathDiagnostics::RecordAssignment(p, ch, srcToRId, dstToRId,
+                                                    selectedPath);
             NS_LOG_FUNCTION("SenderToR" << m_switch_id << "Flowlet does not exist"
                                         << "Path/CE/outPort" << selectedPath << congaTag.GetCe()
                                         << outPort << "FbPath/Metric" << congaTag.GetFbPathId()
@@ -310,6 +334,8 @@ void CongaRouting::RouteInput(Ptr<Packet> p, CustomHeader ch) {
         auto innerToLeafItr = (toLeafItr->second).find(congaTag.GetFbPathId());
         if (congaTag.GetFbPathId() != CONGA_NULL &&
             congaTag.GetFbMetric() != CONGA_NULL) {             // if valid feedback
+            bool feedbackChanged = innerToLeafItr == (toLeafItr->second).end() ||
+                                   innerToLeafItr->second._ce != congaTag.GetFbMetric();
             if (innerToLeafItr == (toLeafItr->second).end()) {  // no feedback so far, then create
                 OutpathInfo outpathInfo;
                 outpathInfo._ce = congaTag.GetFbMetric();
@@ -318,6 +344,12 @@ void CongaRouting::RouteInput(Ptr<Packet> p, CustomHeader ch) {
             } else {  // update statistics
                 (innerToLeafItr->second)._ce = congaTag.GetFbMetric();
                 (innerToLeafItr->second)._updateTime = now;
+            }
+            if (feedbackChanged) {
+                NativePathDiagnostics::RecordEvent(
+                    dstToRId, srcToRId, ch, "feedback_update",
+                    congaTag.GetFbPathId(), congaTag.GetFbPathId(),
+                    congaTag.GetFbMetric(), "remote_piggyback_change");
             }
         }
 
@@ -371,6 +403,25 @@ void CongaRouting::RouteInput(Ptr<Packet> p, CustomHeader ch) {
         return;
     }
     assert(false && "This should not be occured");
+}
+
+void CongaRouting::RecordLocalSignalIfChanged(const CustomHeader& header,
+                                              uint32_t source_tor,
+                                              uint32_t destination_tor,
+                                              uint32_t path_id,
+                                              uint32_t congestion) {
+    if (!NativePathDiagnostics::IsEnabled()) {
+        return;
+    }
+    std::pair<uint32_t, uint32_t> key(destination_tor, path_id);
+    auto previous = m_diagLocalCe.find(key);
+    if (previous != m_diagLocalCe.end() && previous->second == congestion) {
+        return;
+    }
+    m_diagLocalCe[key] = congestion;
+    NativePathDiagnostics::RecordEvent(source_tor, destination_tor, header,
+                                       "feedback_update", path_id, path_id,
+                                       congestion, "local_dre_change");
 }
 
 // minimize the maximum link utilization

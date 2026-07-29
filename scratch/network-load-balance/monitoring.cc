@@ -6,6 +6,7 @@
 #include <ns3/custom-header.h>
 #include <ns3/int-header.h>
 #include <ns3/letflow-routing.h>
+#include <ns3/native-path-diagnostics.h>
 #include <ns3/settings.h>
 
 #include <cassert>
@@ -18,6 +19,19 @@ using namespace ns3;
 NS_LOG_COMPONENT_DEFINE("NetworkLoadBalanceMonitoring");
 
 namespace {
+
+const char* NativeLbName(uint32_t mode) {
+    if (mode == LbMode::kConga) {
+        return "conga";
+    }
+    if (mode == LbMode::kLetflow) {
+        return "letflow";
+    }
+    if (mode == LbMode::kConweave) {
+        return "conweave";
+    }
+    return "unknown";
+}
 
 uint64_t PersistentPoolKey(Ptr<RdmaQueuePair> queue_pair) {
     uint32_t source = Settings::ip_to_node_id(queue_pair->sip);
@@ -44,6 +58,13 @@ bool SimulationMonitor::OpenCoreOutputs() {
     if (config_.cc.mode == 1) {
         cnp_output_ = fopen(config_.io.cnp_output_file.c_str(), "w");
     }
+    bool native_diag_open = true;
+    if (config_.monitoring.native_diag_log) {
+        native_diag_open = NativePathDiagnostics::Open(
+            NativeLbName(config_.lb.mode), config_.io.native_path_counter_output_file,
+            config_.io.native_event_output_file,
+            NanoSeconds(config_.monitoring.native_diag_interval_ns));
+    }
     if (config_.traffic.v5_qp_pool && config_.traffic.v5_wqe_log) {
         v5_wqe_output_ = fopen(config_.io.v5_wqe_output_file.c_str(), "w");
         if (v5_wqe_output_) {
@@ -61,7 +82,7 @@ bool SimulationMonitor::OpenCoreOutputs() {
                     "dcqcn_alpha,completed_wqes,expected_wqes\n");
         }
     }
-    return pfc_output_ && fct_output_ && flow_input_output_ &&
+    return pfc_output_ && fct_output_ && flow_input_output_ && native_diag_open &&
            (config_.cc.mode != 1 || cnp_output_) &&
            (!config_.traffic.v5_qp_pool || !config_.traffic.v5_wqe_log || v5_wqe_output_) &&
            (!config_.traffic.v5_qp_pool || !config_.traffic.v5_qp_state_log ||
@@ -120,6 +141,7 @@ void SimulationMonitor::CloseOutputs() {
     if (RdmaHw::s_oooEventLog == ooo_event_output_) {
         RdmaHw::s_oooEventLog = NULL;
     }
+    NativePathDiagnostics::Close();
     CloseFile(&pfc_output_);
     CloseFile(&fct_output_);
     CloseFile(&flow_input_output_);
@@ -244,6 +266,11 @@ void SimulationMonitor::StartCnpMonitoring(Ptr<RdmaHw> hardware) {
 }
 
 void SimulationMonitor::StartPeriodicMonitoring() {
+    if (config_.monitoring.native_diag_log) {
+        NativePathDiagnostics::Start(
+            Seconds(config_.flowgen_start_time),
+            Seconds(config_.flowgen_stop_time + config_.simulator_extra_time));
+    }
     Simulator::Schedule(Seconds(config_.flowgen_start_time),
                         &SimulationMonitor::MonitorPeriodic, this);
 }

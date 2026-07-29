@@ -129,6 +129,22 @@ bool LoadExperimentConfig(const std::string& path, ExperimentConfig* config) {
             conf >> config->traffic.v5_seqbalance_phi_us;
             std::cerr << "V5_SEQBALANCE_PHI_US\t\t"
                       << config->traffic.v5_seqbalance_phi_us << "\n";
+        } else if (key == "NATIVE_DIAG_LOG") {
+            conf >> config->monitoring.native_diag_log;
+            std::cerr << "NATIVE_DIAG_LOG\t\t\t"
+                      << config->monitoring.native_diag_log << "\n";
+        } else if (key == "NATIVE_DIAG_INTERVAL_NS") {
+            conf >> config->monitoring.native_diag_interval_ns;
+            std::cerr << "NATIVE_DIAG_INTERVAL_NS\t\t"
+                      << config->monitoring.native_diag_interval_ns << "\n";
+        } else if (key == "NATIVE_PATH_COUNTER_OUTPUT_FILE") {
+            conf >> config->io.native_path_counter_output_file;
+            std::cerr << "NATIVE_PATH_COUNTER_OUTPUT_FILE\t"
+                      << config->io.native_path_counter_output_file << "\n";
+        } else if (key == "NATIVE_EVENT_OUTPUT_FILE") {
+            conf >> config->io.native_event_output_file;
+            std::cerr << "NATIVE_EVENT_OUTPUT_FILE\t\t"
+                      << config->io.native_event_output_file << "\n";
         } else if (key == "FLOWLET_SWITCH_OUTPUT_FILE") {
             conf >> config->io.flowlet_switch_output_file;
             std::cerr << "FLOWLET_SWITCH_OUTPUT_FILE\t\t"

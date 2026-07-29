@@ -9,6 +9,7 @@
 #include "ns3/ipv4-header.h"
 #include "ns3/ipv4.h"
 #include "ns3/letflow-routing.h"
+#include "ns3/native-path-diagnostics.h"
 #include "ns3/packet.h"
 #include "ns3/pause-header.h"
 #include "ns3/settings.h"
@@ -334,6 +335,7 @@ void SwitchNode::DoSwitchSend(Ptr<Packet> p, CustomHeader &ch, uint32_t outDev, 
                 //           << ",At " << Simulator::Now() << std::endl;
 #endif
                 Settings::dropped_pkt_sw_ingress++;
+                NativePathDiagnostics::ForgetPacket(p);
                 return;  // drop
             }
         } else { /** DROP: At Egress */
@@ -344,6 +346,7 @@ void SwitchNode::DoSwitchSend(Ptr<Packet> p, CustomHeader &ch, uint32_t outDev, 
             //           << Simulator::Now() << std::endl;
 #endif
             Settings::dropped_pkt_sw_egress++;
+            NativePathDiagnostics::ForgetPacket(p);
             return;  // drop
         }
 
@@ -354,6 +357,7 @@ void SwitchNode::DoSwitchSend(Ptr<Packet> p, CustomHeader &ch, uint32_t outDev, 
 }
 
 void SwitchNode::SwitchNotifyDequeue(uint32_t ifIndex, uint32_t qIndex, Ptr<Packet> p) {
+    NativePathDiagnostics::RecordTx(p);
     FlowIdTag t;
     p->PeekPacketTag(t);
     if (qIndex != 0) {

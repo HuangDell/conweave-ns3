@@ -141,6 +141,10 @@ class CongaRouting : public Object {
     /*-----------*/
     
    private:
+    void RecordLocalSignalIfChanged(const CustomHeader& header, uint32_t source_tor,
+                                    uint32_t destination_tor, uint32_t path_id,
+                                    uint32_t congestion);
+
     // callback
     SwitchSendCallback m_switchSendCallback;  // bound to SwitchNode::SwitchSend (for Request/UDP)
     SwitchSendToDevCallback
@@ -160,6 +164,7 @@ class CongaRouting : public Object {
     // local
     std::map<uint32_t, uint32_t> m_DreMap;        // outPort -> DRE (at SrcToR)
     std::map<uint64_t, Flowlet*> m_flowletTable;  // QpKey -> Flowlet (at SrcToR)
+    std::map<std::pair<uint32_t, uint32_t>, uint32_t> m_diagLocalCe;
 };
 
 }  // namespace ns3

@@ -4,6 +4,7 @@
 
 #include <ns3/conga-routing.h>
 #include <ns3/letflow-routing.h>
+#include <ns3/native-path-diagnostics.h>
 #include <ns3/qbb-net-device.h>
 #include <ns3/settings.h>
 
@@ -27,6 +28,7 @@ uint32_t PackPath(const uint8_t path_ports[4]) {
 
 void RegisterPath(const ExperimentConfig& config, Ptr<SwitchNode> source_switch,
                   uint32_t destination_tor, uint32_t path_id, uint32_t hop_count) {
+    NativePathDiagnostics::RegisterPath(source_switch->GetId(), destination_tor, path_id);
     if (config.lb.mode == LbMode::kConga) {
         source_switch->m_mmu->m_congaRouting.m_congaRoutingTable[destination_tor].insert(path_id);
     } else if (config.lb.mode == LbMode::kLetflow) {

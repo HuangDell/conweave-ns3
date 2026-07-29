@@ -31,6 +31,7 @@
 #include "ns3/flow-id-tag.h"
 #include "ns3/ipv4-header.h"
 #include "ns3/log.h"
+#include "ns3/native-path-diagnostics.h"
 #include "ns3/nstime.h"
 #include "ns3/object.h"
 #include "ns3/packet.h"
@@ -451,6 +452,7 @@ void ConWeaveRouting::RouteInput(Ptr<Packet> p, CustomHeader &ch) {
             conweaveTxMeta tx_md;  // SrcToR packet metadata
             tx_md.pkt_flowkey = GetFlowKey(ch.sip, ch.dip, ch.udp.sport, ch.udp.dport);
             auto &txEntry = m_conweaveTxTable[tx_md.pkt_flowkey];
+            uint32_t oldPath = txEntry._pathId;
 
             /** INIT: initialize flowkey */
             if (txEntry._flowkey == 0) { /* if new */
@@ -599,6 +601,39 @@ void ConWeaveRouting::RouteInput(Ptr<Packet> p, CustomHeader &ch) {
                 tx_md.currPath = txEntry._pathId;
             }
 
+            if (tx_md.flagExpired) {
+                const char* reason = tx_md.newConnection ? "new_connection" : "entry_expired";
+                NativePathDiagnostics::RecordDecision(srcToRId, dstToRId,
+                                                      txEntry._pathId);
+                if (!tx_md.newConnection && oldPath != txEntry._pathId) {
+                    NativePathDiagnostics::RecordEvent(
+                        srcToRId, dstToRId, ch, "reroute", oldPath,
+                        txEntry._pathId, 0, "entry_expired");
+                }
+                NativePathDiagnostics::RecordEvent(
+                    srcToRId, dstToRId, ch, "rtt_request",
+                    tx_md.newConnection ? -1 : static_cast<int64_t>(oldPath),
+                    tx_md.currPath, txEntry._replyTimer.GetNanoSeconds(), reason);
+            } else if (tx_md.flagReplyTimeout) {
+                NativePathDiagnostics::RecordEvent(
+                    srcToRId, dstToRId, ch, "rtt_timeout", oldPath,
+                    txEntry._pathId,
+                    baseRTT + m_extraReplyDeadline.GetNanoSeconds(),
+                    "reply_deadline");
+                NativePathDiagnostics::RecordDecision(srcToRId, dstToRId,
+                                                      txEntry._pathId);
+                if (oldPath != txEntry._pathId) {
+                    NativePathDiagnostics::RecordEvent(
+                        srcToRId, dstToRId, ch, "reroute", oldPath,
+                        txEntry._pathId, 0, "rtt_timeout");
+                }
+            } else if (tx_md.flagStabilized) {
+                NativePathDiagnostics::RecordEvent(
+                    srcToRId, dstToRId, ch, "rtt_request", oldPath,
+                    tx_md.currPath, txEntry._replyTimer.GetNanoSeconds(),
+                    "stabilized");
+            }
+
             /** TAILTIME: Memorize TAIL packet timestamp or get if phase=1 */
             if (tx_md.flagExpired) { /* expiry -> set zero */
                 txEntry._tailTime = NanoSeconds(0);
@@ -628,6 +663,8 @@ void ConWeaveRouting::RouteInput(Ptr<Packet> p, CustomHeader &ch) {
                 conweaveDataTag.SetFlagData(ConWeaveDataTag::DATA);
             }
             p->AddPacketTag(conweaveDataTag);
+            NativePathDiagnostics::RecordAssignment(p, ch, srcToRId, dstToRId,
+                                                    tx_md.currPath);
 
             uint32_t outDev =
                 GetOutPortFromPath(conweaveDataTag.GetPathId(), conweaveDataTag.GetHopCount());
@@ -976,6 +1013,9 @@ void ConWeaveRouting::RouteInput(Ptr<Packet> p, CustomHeader &ch) {
                             true;  // out-of-order issue is resolved for this "flowcut"
                         txEntry._replyTimer = CW_MAX_TIME; /* no more timeout */
                         ConWeaveRouting::m_nTimelyTailReplied += 1;
+                        NativePathDiagnostics::RecordEvent(
+                            dstToRId, srcToRId, ch, "clear", txEntry._pathId,
+                            txEntry._pathId, tx_md.reply_epoch, "tail_reply");
                         SLB_LOG(PARSE_REVERSE_FIVE_TUPLE(ch)
                                 << "[TxToR/GotReplied] Sw(" << m_switch_id << "),PktEpoch:"
                                 << tx_md.reply_epoch << ",PktPhase:" << tx_md.reply_phase
@@ -1004,6 +1044,13 @@ void ConWeaveRouting::RouteInput(Ptr<Packet> p, CustomHeader &ch) {
                      */
                     pathEntry._pathId = congestedPathId;
                     pathEntry._invalidTime = now + m_pathPauseTime;
+                    NativePathDiagnostics::RecordEvent(
+                        dstToRId, srcToRId, ch, "notify", congestedPathId,
+                        congestedPathId, 1, "ecn_notify");
+                    NativePathDiagnostics::RecordEvent(
+                        dstToRId, srcToRId, ch, "path_unavailable",
+                        congestedPathId, congestedPathId,
+                        pathEntry._invalidTime.GetNanoSeconds(), "pause_hold");
                     return;  // drop this NOTIFY
                 }
             }

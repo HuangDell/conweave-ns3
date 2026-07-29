@@ -26,6 +26,7 @@
 #include "ns3/event-id.h"
 #include "ns3/ipv4-header.h"
 #include "ns3/log.h"
+#include "ns3/native-path-diagnostics.h"
 #include "ns3/nstime.h"
 #include "ns3/object.h"
 #include "ns3/packet.h"
@@ -168,6 +169,8 @@ uint32_t LetflowRouting::RouteInput(Ptr<Packet> p, CustomHeader ch) {
                     letflowTag.SetHopCount(0);
 
                     p->AddPacketTag(letflowTag);
+                    NativePathDiagnostics::RecordAssignment(p, ch, srcToRId, dstToRId,
+                                                            selectedPath);
                     NS_LOG_FUNCTION("SenderToR"
                                     << m_switch_id
                                     << "Flowlet exists"
@@ -177,6 +180,8 @@ uint32_t LetflowRouting::RouteInput(Ptr<Packet> p, CustomHeader ch) {
 
                 /*---- Flowlet Timeout ----*/
                 // NS_LOG_FUNCTION("Flowlet expires, calculate the new port");
+                uint32_t oldPath = flowlet->_PathId;
+                uint64_t idleGapNs = (now - flowlet->_activeTime).GetNanoSeconds();
                 selectedPath = GetPinnedPath(dstToRId, ch.sip, qpkey);
                 LetflowRouting::nFlowletTimeout++;
 
@@ -192,6 +197,15 @@ uint32_t LetflowRouting::RouteInput(Ptr<Packet> p, CustomHeader ch) {
                 letflowTag.SetHopCount(0);
 
                 p->AddPacketTag(letflowTag);
+                NativePathDiagnostics::RecordEvent(
+                    srcToRId, dstToRId, ch, "flowlet_timeout", oldPath,
+                    selectedPath, idleGapNs, "idle_gap");
+                NativePathDiagnostics::RecordEvent(srcToRId, dstToRId, ch, "path_select",
+                                                   oldPath, selectedPath, 0,
+                                                   "flowlet_timeout");
+                NativePathDiagnostics::RecordDecision(srcToRId, dstToRId, selectedPath);
+                NativePathDiagnostics::RecordAssignment(p, ch, srcToRId, dstToRId,
+                                                        selectedPath);
                 NS_LOG_FUNCTION("SenderToR"
                                 << m_switch_id
                                 << "Flowlet exists & Timeout"
@@ -213,6 +227,13 @@ uint32_t LetflowRouting::RouteInput(Ptr<Packet> p, CustomHeader ch) {
             letflowTag.SetHopCount(0);
 
             p->AddPacketTag(letflowTag);
+            NativePathDiagnostics::RecordEvent(srcToRId, dstToRId, ch, "flow_start", -1,
+                                               selectedPath, 0, "new_flow");
+            NativePathDiagnostics::RecordEvent(srcToRId, dstToRId, ch, "path_select", -1,
+                                               selectedPath, 0, "new_flow");
+            NativePathDiagnostics::RecordDecision(srcToRId, dstToRId, selectedPath);
+            NativePathDiagnostics::RecordAssignment(p, ch, srcToRId, dstToRId,
+                                                    selectedPath);
             NS_LOG_FUNCTION("SenderToR"
                             << m_switch_id
                             << "Flowlet does not exist"
