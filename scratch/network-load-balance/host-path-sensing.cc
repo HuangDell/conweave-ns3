@@ -91,9 +91,9 @@ void HostPathSensing::RecordWqeEvent(Ptr<RdmaQueuePair> queue_pair, uint32_t eve
                           queue_pair->m_v5_lane == config_.host_sensing.target_lane,
                       "target app/QP/lane mapping changed");
         if (!target_qp_.valid) {
-            target_qp_ = {source, destination, queue_pair->m_pg, queue_pair->sport,
-                          queue_pair->dport, queue_pair->m_v5_lane, QpKey(queue_pair),
-                          queue_pair, true};
+            target_qp_ = QpIdentity(source, destination, queue_pair->m_pg,
+                                    queue_pair->sport, queue_pair->dport,
+                                    queue_pair->m_v5_lane, QpKey(queue_pair), queue_pair);
         } else {
             NS_ASSERT_MSG(target_qp_.qp_key == QpKey(queue_pair),
                           "target data QP changed during its active lifetime");
@@ -119,9 +119,9 @@ void HostPathSensing::RecordWqeEvent(Ptr<RdmaQueuePair> queue_pair, uint32_t eve
                       queue_pair->m_v5_lane == config_.host_sensing.target_lane,
                   "probe QP is not pinned to the target path");
     if (!probe_qp_.valid) {
-        probe_qp_ = {source, destination, queue_pair->m_pg, queue_pair->sport,
-                     queue_pair->dport, queue_pair->m_v5_lane, QpKey(queue_pair),
-                     queue_pair, true};
+        probe_qp_ = QpIdentity(source, destination, queue_pair->m_pg, queue_pair->sport,
+                               queue_pair->dport, queue_pair->m_v5_lane,
+                               QpKey(queue_pair), queue_pair);
     } else {
         NS_ASSERT_MSG(probe_qp_.qp_key == QpKey(queue_pair),
                       "probe QP changed during the experiment");

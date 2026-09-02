@@ -41,6 +41,22 @@ class HostPathSensing {
 
   private:
     struct QpIdentity {
+        QpIdentity() {}
+
+        QpIdentity(uint32_t source_value, uint32_t destination_value, uint16_t pg_value,
+                   uint16_t sport_value, uint16_t dport_value, uint32_t lane_value,
+                   uint64_t qp_key_value,
+                   ns3::Ptr<ns3::RdmaQueuePair> queue_pair_value)
+            : source(source_value),
+              destination(destination_value),
+              pg(pg_value),
+              sport(sport_value),
+              dport(dport_value),
+              lane(lane_value),
+              qp_key(qp_key_value),
+              queue_pair(queue_pair_value),
+              valid(true) {}
+
         uint32_t source = 0;
         uint32_t destination = 0;
         uint16_t pg = 0;
