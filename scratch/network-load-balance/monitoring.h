@@ -11,6 +11,7 @@
 
 #include <cstdio>
 #include <map>
+#include <memory>
 
 namespace nlb {
 
@@ -31,6 +32,7 @@ class SimulationMonitor {
     void ScheduleModeHistory();
 
     FILE* V5ChunkOutput() const { return v5_chunk_output_; }
+    void RecordHostProbeSkipped(uint32_t probe_id);
     void RecordEstimatorBatch(
         uint64_t time_ns, uint32_t switch_id,
         const std::vector<ns3::ResidualCapacityEstimator::PortSnapshot>& snapshots);
@@ -68,6 +70,7 @@ class SimulationMonitor {
     uint64_t target_completion_count_ = 0;
     bool history_printed_ = false;
     std::map<uint64_t, uint64_t> estimator_true_rates_;
+    std::unique_ptr<class HostPathSensing> host_path_sensing_;
 
     FILE* pfc_output_ = NULL;
     FILE* fct_output_ = NULL;

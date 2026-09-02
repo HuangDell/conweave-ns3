@@ -85,6 +85,18 @@ V5_PROBE_PERIOD_US {v5_probe_period_us}
 V5_PROBE_BYTES {v5_probe_bytes}
 V5_BINARY_HOLD_US {v5_binary_hold_us}
 V5_SEQBALANCE_PHI_US {v5_seqbalance_phi_us}
+HOST_SENSING_ENABLE {host_sensing_enable}
+HOST_SENSING_APP_LANES {host_sensing_app_lanes}
+HOST_SENSING_TARGET {host_sensing_target_app_id} {host_sensing_target_source} {host_sensing_target_destination} {host_sensing_target_pg} {host_sensing_target_lane}
+HOST_SENSING_TRUTH_LINK {host_sensing_truth_node_a} {host_sensing_truth_node_b}
+HOST_SENSING_NOMINAL_RATE_BPS {host_sensing_nominal_rate_bps}
+HOST_SENSING_DELIVERY_WINDOW_US {host_sensing_delivery_window_us}
+HOST_SENSING_EWMA_BETA {host_sensing_ewma_beta}
+HOST_SENSING_PROBE_BYTES {host_sensing_probe_bytes}
+HOST_SENSING_PROBE_PERIOD_US {host_sensing_probe_period_us}
+HOST_SENSING_PROBE_TIMEOUT_US {host_sensing_probe_timeout_us}
+HOST_SENSING_WARMUP_US {host_sensing_warmup_us}
+HOST_SENSING_MIN_BASELINE_SAMPLES {host_sensing_min_baseline_samples}
 NATIVE_DIAG_LOG {native_diag_log}
 NATIVE_DIAG_INTERVAL_NS {native_diag_interval_ns}
 NATIVE_PATH_COUNTER_OUTPUT_FILE mix/output/{id}/{id}_out_native_path_counter.csv
@@ -95,6 +107,10 @@ V5_CHUNK_OUTPUT_FILE mix/output/{id}/{id}_out_v5_chunk.txt
 V5_WQE_OUTPUT_FILE mix/output/{id}/{id}_out_v5_wqe.csv
 V5_QP_STATE_OUTPUT_FILE mix/output/{id}/{id}_out_v5_qp_state.csv
 V5_ESTIMATOR_OUTPUT_FILE mix/output/{id}/{id}_out_v5_estimator.csv
+HOST_SENSING_OUTPUT_FILE mix/output/{id}/{id}_out_host_sensing.csv
+HOST_PROBE_OUTPUT_FILE mix/output/{id}/{id}_out_host_probe.csv
+HOST_PATH_TRUTH_OUTPUT_FILE mix/output/{id}/{id}_out_host_path_truth.csv
+HOST_PROBE_TRUTH_OUTPUT_FILE mix/output/{id}/{id}_out_host_probe_truth.csv
 
 ALPHA_RESUME_INTERVAL 1
 RATE_DECREASE_INTERVAL 4
@@ -408,7 +424,7 @@ def main():
                         choices=('both', 'a-to-b'), default='both',
                         help="degrade both directions or only A->B (default: both)")
     parser.add_argument('--degrade_mode', dest='degrade_mode', action='store', default='static',
-                        help="static / flap (default: static)")
+                        help="static / once-recovery / flap (default: static)")
     parser.add_argument('--degrade_start_us', dest='degrade_start_us', action='store', type=int,
                         default=5000, help="us after flowgen_start to begin degradation (default: 5000)")
     parser.add_argument('--flap_period_us', dest='flap_period_us', action='store', type=int,
@@ -476,6 +492,38 @@ def main():
     parser.add_argument('--v5_seqbalance_phi_us', dest='v5_seqbalance_phi_us', action='store',
                         type=int, default=32,
                         help="v5 S5: SeqBalance-style ECN/CNP inactive duration phi in us (default: 32)")
+    parser.add_argument('--host_sensing_enable', dest='host_sensing_enable', action='store',
+                        type=int, default=0, help="enable the host-side path sensing experiment")
+    parser.add_argument('--host_sensing_app_lanes', dest='host_sensing_app_lanes',
+                        default='', help="fixed app:lane pairs, e.g. 0:0,1:1,2:2,3:3")
+    parser.add_argument('--host_sensing_target_app_id', dest='host_sensing_target_app_id',
+                        type=int, default=0)
+    parser.add_argument('--host_sensing_target_source', dest='host_sensing_target_source',
+                        type=int, default=0)
+    parser.add_argument('--host_sensing_target_destination',
+                        dest='host_sensing_target_destination', type=int, default=8)
+    parser.add_argument('--host_sensing_target_pg', dest='host_sensing_target_pg',
+                        type=int, default=3)
+    parser.add_argument('--host_sensing_target_lane', dest='host_sensing_target_lane',
+                        type=int, default=0)
+    parser.add_argument('--host_sensing_truth_link', dest='host_sensing_truth_link',
+                        default='16,18', help="source-ToR truth link as A,B node IDs")
+    parser.add_argument('--host_sensing_nominal_rate_gbps',
+                        dest='host_sensing_nominal_rate_gbps', type=float, default=100.0)
+    parser.add_argument('--host_sensing_delivery_window_us',
+                        dest='host_sensing_delivery_window_us', type=int, default=200)
+    parser.add_argument('--host_sensing_ewma_beta', dest='host_sensing_ewma_beta',
+                        type=float, default=0.25)
+    parser.add_argument('--host_sensing_probe_bytes', dest='host_sensing_probe_bytes',
+                        type=int, default=4096)
+    parser.add_argument('--host_sensing_probe_period_us',
+                        dest='host_sensing_probe_period_us', type=int, default=200)
+    parser.add_argument('--host_sensing_probe_timeout_us',
+                        dest='host_sensing_probe_timeout_us', type=int, default=1000)
+    parser.add_argument('--host_sensing_warmup_us', dest='host_sensing_warmup_us',
+                        type=int, default=5000)
+    parser.add_argument('--host_sensing_min_baseline_samples',
+                        dest='host_sensing_min_baseline_samples', type=int, default=20)
     parser.add_argument('--native_diag_log', dest='native_diag_log', action='store', type=int,
                         default=0,
                         help="enable native LB path counters and event diagnostics (default: 0)")
@@ -522,6 +570,12 @@ def main():
         events = []
         if args.degrade_mode == "static":
             events.append((args.degrade_start_us, A, B, args.degrade_frac))
+        elif args.degrade_mode == "once-recovery":
+            events.append((args.degrade_start_us, A, B, args.degrade_frac))
+            recovery_time = args.degrade_start_us + args.flap_period_us
+            if recovery_time >= simul_us:
+                raise Exception("CONFIG ERROR: once-recovery event is outside simulation horizon")
+            events.append((recovery_time, A, B, args.flap_frac_hi))
         elif args.degrade_mode == "flap":
             t = args.degrade_start_us
             lo = True  # start degraded
@@ -618,6 +672,54 @@ def main():
         raise Exception("CONFIG ERROR : --v5_wqe_log and --v5_qp_state_log must be 0 or 1")
     if (args.v5_wqe_log or args.v5_qp_state_log) and not args.v5_qp_pool:
         raise Exception("CONFIG ERROR : S2 WQE/QP logs require --v5_qp_pool 1")
+
+    if args.host_sensing_enable not in (0, 1):
+        raise Exception("CONFIG ERROR: --host_sensing_enable must be 0 or 1")
+    app_lane_pairs = []
+    if args.host_sensing_app_lanes:
+        for pair in args.host_sensing_app_lanes.split(','):
+            fields = pair.split(':')
+            if len(fields) != 2:
+                raise Exception("CONFIG ERROR: malformed host app:lane pair {}".format(pair))
+            app_id, lane = (int(value) for value in fields)
+            if app_id < 0 or lane < 0 or lane >= args.v5_qp_pool_size:
+                raise Exception("CONFIG ERROR: invalid host app:lane pair {}".format(pair))
+            app_lane_pairs.append((app_id, lane))
+    if len({app_id for app_id, _ in app_lane_pairs}) != len(app_lane_pairs):
+        raise Exception("CONFIG ERROR: duplicate app in --host_sensing_app_lanes")
+    if args.host_sensing_enable:
+        if (args.lb != "letflow" or not args.v5_qp_pool or
+                args.v5_qp_pool_size != 4 or args.v5_nsub != 4 or
+                args.v5_chunk_bytes != 65536):
+            raise Exception(
+                "CONFIG ERROR: host sensing requires LetFlow and a four-lane v5 QP pool "
+                "with 65536-byte WQEs")
+        if not args.v5_wqe_log or not args.v5_qp_state_log or not args.sflowlet_ooo_log:
+            raise Exception(
+                "CONFIG ERROR: host sensing requires WQE, QP-state, and OoO event logs")
+        if not app_lane_pairs:
+            raise Exception("CONFIG ERROR: host sensing requires fixed app:lane mappings")
+        if dict(app_lane_pairs).get(args.host_sensing_target_app_id) != args.host_sensing_target_lane:
+            raise Exception("CONFIG ERROR: target app mapping must equal target lane")
+        if (args.host_sensing_delivery_window_us <= 0 or
+                not 0.0 < args.host_sensing_ewma_beta <= 1.0 or
+                args.host_sensing_probe_bytes <= 0 or
+                args.host_sensing_probe_period_us <= 0 or
+                args.host_sensing_probe_timeout_us <= 0 or
+                args.host_sensing_warmup_us <= 0 or
+                args.host_sensing_min_baseline_samples <= 0 or
+                args.host_sensing_nominal_rate_gbps <= 0.0):
+            raise Exception("CONFIG ERROR: invalid host sensing estimator/probe parameter")
+    host_sensing_app_lanes = "{}{}".format(
+        len(app_lane_pairs),
+        "" if not app_lane_pairs else " " + " ".join(
+            "{} {}".format(app_id, lane) for app_id, lane in app_lane_pairs))
+    truth_link_fields = args.host_sensing_truth_link.split(',')
+    if len(truth_link_fields) != 2:
+        raise Exception("CONFIG ERROR: --host_sensing_truth_link must be A,B")
+    host_sensing_truth_node_a, host_sensing_truth_node_b = (
+        int(value) for value in truth_link_fields)
+    host_sensing_nominal_rate_bps = round(args.host_sensing_nominal_rate_gbps * 1e9)
 
     # get over-subscription ratio from topoogy name
 
@@ -840,6 +942,23 @@ def main():
                                         v5_probe_bytes=args.v5_probe_bytes,
                                         v5_binary_hold_us=args.v5_binary_hold_us,
                                         v5_seqbalance_phi_us=args.v5_seqbalance_phi_us,
+                                        host_sensing_enable=args.host_sensing_enable,
+                                        host_sensing_app_lanes=host_sensing_app_lanes,
+                                        host_sensing_target_app_id=args.host_sensing_target_app_id,
+                                        host_sensing_target_source=args.host_sensing_target_source,
+                                        host_sensing_target_destination=args.host_sensing_target_destination,
+                                        host_sensing_target_pg=args.host_sensing_target_pg,
+                                        host_sensing_target_lane=args.host_sensing_target_lane,
+                                        host_sensing_truth_node_a=host_sensing_truth_node_a,
+                                        host_sensing_truth_node_b=host_sensing_truth_node_b,
+                                        host_sensing_nominal_rate_bps=host_sensing_nominal_rate_bps,
+                                        host_sensing_delivery_window_us=args.host_sensing_delivery_window_us,
+                                        host_sensing_ewma_beta=args.host_sensing_ewma_beta,
+                                        host_sensing_probe_bytes=args.host_sensing_probe_bytes,
+                                        host_sensing_probe_period_us=args.host_sensing_probe_period_us,
+                                        host_sensing_probe_timeout_us=args.host_sensing_probe_timeout_us,
+                                        host_sensing_warmup_us=args.host_sensing_warmup_us,
+                                        host_sensing_min_baseline_samples=args.host_sensing_min_baseline_samples,
                                         native_diag_log=args.native_diag_log,
                                         native_diag_interval_ns=args.native_diag_interval_ns,
                                         random_seed=args.seed)
@@ -895,6 +1014,26 @@ def main():
             "v5_probe_bytes": args.v5_probe_bytes,
             "v5_binary_hold_us": args.v5_binary_hold_us,
             "v5_seqbalance_phi_us": args.v5_seqbalance_phi_us,
+            "host_sensing_enable": args.host_sensing_enable,
+            "host_sensing_app_lanes": [
+                {"app_id": app_id, "lane": lane} for app_id, lane in app_lane_pairs
+            ],
+            "host_sensing_target_app_id": args.host_sensing_target_app_id,
+            "host_sensing_target_source": args.host_sensing_target_source,
+            "host_sensing_target_destination": args.host_sensing_target_destination,
+            "host_sensing_target_pg": args.host_sensing_target_pg,
+            "host_sensing_target_lane": args.host_sensing_target_lane,
+            "host_sensing_truth_link": [
+                host_sensing_truth_node_a, host_sensing_truth_node_b
+            ],
+            "host_sensing_nominal_rate_bps": host_sensing_nominal_rate_bps,
+            "host_sensing_delivery_window_us": args.host_sensing_delivery_window_us,
+            "host_sensing_ewma_beta": args.host_sensing_ewma_beta,
+            "host_sensing_probe_bytes": args.host_sensing_probe_bytes,
+            "host_sensing_probe_period_us": args.host_sensing_probe_period_us,
+            "host_sensing_probe_timeout_us": args.host_sensing_probe_timeout_us,
+            "host_sensing_warmup_us": args.host_sensing_warmup_us,
+            "host_sensing_min_baseline_samples": args.host_sensing_min_baseline_samples,
             "native_diag_log": args.native_diag_log,
             "native_diag_interval_ns": args.native_diag_interval_ns,
             "degrade_direction": args.degrade_direction,

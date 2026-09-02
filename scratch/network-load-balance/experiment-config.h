@@ -73,6 +73,26 @@ struct TrafficConfig {
     uint64_t v5_seqbalance_phi_us = 32;
 };
 
+struct HostSensingConfig {
+    uint32_t enable = 0;
+    std::unordered_map<uint32_t, uint32_t> app_lanes;
+    uint32_t target_app_id = 0;
+    uint32_t target_source = 0;
+    uint32_t target_destination = 8;
+    uint32_t target_pg = 3;
+    uint32_t target_lane = 0;
+    uint32_t truth_node_a = 16;
+    uint32_t truth_node_b = 18;
+    uint64_t nominal_rate_bps = 100000000000lu;
+    uint64_t delivery_window_us = 200;
+    double ewma_beta = 0.25;
+    uint32_t probe_bytes = 4096;
+    uint64_t probe_period_us = 200;
+    uint64_t probe_timeout_us = 1000;
+    uint64_t warmup_us = 5000;
+    uint32_t min_baseline_samples = 20;
+};
+
 struct CongestionControlConfig {
     uint32_t mode = 1;
     bool enable_qcn = true;
@@ -145,6 +165,10 @@ struct IoConfig {
     std::string v5_estimator_output_file = "v5_estimator.csv";
     std::string native_path_counter_output_file = "native_path_counter.csv";
     std::string native_event_output_file = "native_events.csv";
+    std::string host_sensing_output_file = "host_sensing.csv";
+    std::string host_probe_output_file = "host_probe.csv";
+    std::string host_path_truth_output_file = "host_path_truth.csv";
+    std::string host_probe_truth_output_file = "host_probe_truth.csv";
 };
 
 struct LinkDegradeEvent {
@@ -167,6 +191,7 @@ struct ExperimentConfig {
     TrafficConfig traffic;
     CongestionControlConfig cc;
     MonitoringConfig monitoring;
+    HostSensingConfig host_sensing;
     IoConfig io;
     FailureConfig failures;
 

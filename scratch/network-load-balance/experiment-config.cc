@@ -129,6 +129,63 @@ bool LoadExperimentConfig(const std::string& path, ExperimentConfig* config) {
             conf >> config->traffic.v5_seqbalance_phi_us;
             std::cerr << "V5_SEQBALANCE_PHI_US\t\t"
                       << config->traffic.v5_seqbalance_phi_us << "\n";
+        } else if (key == "HOST_SENSING_ENABLE") {
+            conf >> config->host_sensing.enable;
+            std::cerr << "HOST_SENSING_ENABLE\t\t" << config->host_sensing.enable << "\n";
+        } else if (key == "HOST_SENSING_APP_LANES") {
+            uint32_t count = 0;
+            conf >> count;
+            std::cerr << "HOST_SENSING_APP_LANES\t" << count;
+            for (uint32_t i = 0; i < count; ++i) {
+                uint32_t app_id = 0;
+                uint32_t lane = 0;
+                conf >> app_id >> lane;
+                config->host_sensing.app_lanes[app_id] = lane;
+                std::cerr << " | " << app_id << ' ' << lane;
+            }
+            std::cerr << '\n';
+        } else if (key == "HOST_SENSING_TARGET") {
+            conf >> config->host_sensing.target_app_id >> config->host_sensing.target_source >>
+                config->host_sensing.target_destination >> config->host_sensing.target_pg >>
+                config->host_sensing.target_lane;
+            std::cerr << "HOST_SENSING_TARGET\t\t" << config->host_sensing.target_app_id << ' '
+                      << config->host_sensing.target_source << ' '
+                      << config->host_sensing.target_destination << ' '
+                      << config->host_sensing.target_pg << ' '
+                      << config->host_sensing.target_lane << "\n";
+        } else if (key == "HOST_SENSING_TRUTH_LINK") {
+            conf >> config->host_sensing.truth_node_a >> config->host_sensing.truth_node_b;
+            std::cerr << "HOST_SENSING_TRUTH_LINK\t" << config->host_sensing.truth_node_a << ' '
+                      << config->host_sensing.truth_node_b << "\n";
+        } else if (key == "HOST_SENSING_NOMINAL_RATE_BPS") {
+            conf >> config->host_sensing.nominal_rate_bps;
+            std::cerr << "HOST_SENSING_NOMINAL_RATE_BPS\t"
+                      << config->host_sensing.nominal_rate_bps << "\n";
+        } else if (key == "HOST_SENSING_DELIVERY_WINDOW_US") {
+            conf >> config->host_sensing.delivery_window_us;
+            std::cerr << "HOST_SENSING_DELIVERY_WINDOW_US\t"
+                      << config->host_sensing.delivery_window_us << "\n";
+        } else if (key == "HOST_SENSING_EWMA_BETA") {
+            conf >> config->host_sensing.ewma_beta;
+            std::cerr << "HOST_SENSING_EWMA_BETA\t" << config->host_sensing.ewma_beta << "\n";
+        } else if (key == "HOST_SENSING_PROBE_BYTES") {
+            conf >> config->host_sensing.probe_bytes;
+            std::cerr << "HOST_SENSING_PROBE_BYTES\t" << config->host_sensing.probe_bytes << "\n";
+        } else if (key == "HOST_SENSING_PROBE_PERIOD_US") {
+            conf >> config->host_sensing.probe_period_us;
+            std::cerr << "HOST_SENSING_PROBE_PERIOD_US\t"
+                      << config->host_sensing.probe_period_us << "\n";
+        } else if (key == "HOST_SENSING_PROBE_TIMEOUT_US") {
+            conf >> config->host_sensing.probe_timeout_us;
+            std::cerr << "HOST_SENSING_PROBE_TIMEOUT_US\t"
+                      << config->host_sensing.probe_timeout_us << "\n";
+        } else if (key == "HOST_SENSING_WARMUP_US") {
+            conf >> config->host_sensing.warmup_us;
+            std::cerr << "HOST_SENSING_WARMUP_US\t" << config->host_sensing.warmup_us << "\n";
+        } else if (key == "HOST_SENSING_MIN_BASELINE_SAMPLES") {
+            conf >> config->host_sensing.min_baseline_samples;
+            std::cerr << "HOST_SENSING_MIN_BASELINE_SAMPLES\t"
+                      << config->host_sensing.min_baseline_samples << "\n";
         } else if (key == "NATIVE_DIAG_LOG") {
             conf >> config->monitoring.native_diag_log;
             std::cerr << "NATIVE_DIAG_LOG\t\t\t"
@@ -167,6 +224,21 @@ bool LoadExperimentConfig(const std::string& path, ExperimentConfig* config) {
             conf >> config->io.v5_estimator_output_file;
             std::cerr << "V5_ESTIMATOR_OUTPUT_FILE\t" << config->io.v5_estimator_output_file
                       << "\n";
+        } else if (key == "HOST_SENSING_OUTPUT_FILE") {
+            conf >> config->io.host_sensing_output_file;
+            std::cerr << "HOST_SENSING_OUTPUT_FILE\t" << config->io.host_sensing_output_file
+                      << "\n";
+        } else if (key == "HOST_PROBE_OUTPUT_FILE") {
+            conf >> config->io.host_probe_output_file;
+            std::cerr << "HOST_PROBE_OUTPUT_FILE\t" << config->io.host_probe_output_file << "\n";
+        } else if (key == "HOST_PATH_TRUTH_OUTPUT_FILE") {
+            conf >> config->io.host_path_truth_output_file;
+            std::cerr << "HOST_PATH_TRUTH_OUTPUT_FILE\t"
+                      << config->io.host_path_truth_output_file << "\n";
+        } else if (key == "HOST_PROBE_TRUTH_OUTPUT_FILE") {
+            conf >> config->io.host_probe_truth_output_file;
+            std::cerr << "HOST_PROBE_TRUTH_OUTPUT_FILE\t"
+                      << config->io.host_probe_truth_output_file << "\n";
         } else if (key == "CONWEAVE_TX_EXPIRY_TIME") {
             uint32_t value = 0;
             conf >> value;

@@ -4,6 +4,8 @@
 #include "experiment-config.h"
 #include "simulation-state.h"
 
+#include <ns3/rdma-hw.h>
+
 #include <fstream>
 #include <map>
 #include <string>
@@ -93,6 +95,7 @@ class TrafficScheduler {
     };
 
     bool PersistentPoolEnabled() const;
+    bool HostSensingEnabled() const;
     uint32_t LaneCount() const;
     bool ChunkModeEnabled() const;
     uint64_t ChunkCount(uint32_t bytes) const;
@@ -133,6 +136,10 @@ class TrafficScheduler {
     void CommitPersistentWqe(uint64_t pool_key, uint32_t app_id, uint32_t chunk_id,
                              uint32_t bytes);
     void SealPersistentPools();
+    void ScheduleHostProbeEpoch();
+    void SealHostProbe();
+    void HostProbeWqeEvent(ns3::Ptr<ns3::RdmaQueuePair> queue_pair, uint32_t event,
+                           ns3::RdmaQueuePair::WqeBoundary boundary);
     void ReadFlowInput();
     void ScheduleFlowInputs();
 
@@ -156,6 +163,10 @@ class TrafficScheduler {
     std::map<uint64_t, PersistentPoolEntry> persistent_pool_;
     double last_persistent_commit_time_ = 0.0;
     bool persistent_pool_seal_scheduled_ = false;
+    PersistentPoolEntry host_probe_entry_;
+    bool host_probe_entry_created_ = false;
+    bool host_probe_outstanding_ = false;
+    uint32_t host_probe_epoch_ = 0;
 };
 
 }  // namespace nlb

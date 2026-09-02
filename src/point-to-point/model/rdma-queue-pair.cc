@@ -80,10 +80,12 @@ RdmaQueuePair::RdmaQueuePair(uint16_t pg, Ipv4Address _sip, Ipv4Address _dip, ui
     m_pool_sealed = false;
     m_idle_reported = false;
     m_v5_lane = 0;
+    m_v5_traffic_class = V5_DATA;
     m_expected_wqes = 0;
     m_completed_wqes = 0;
     m_v5_ecn_cnp_count = 0;
     m_v5_last_ecn_cnp_ns = 0;
+    m_v5_retry_count = 0;
 }
 
 void RdmaQueuePair::SetSize(uint64_t size) { m_size = size; }

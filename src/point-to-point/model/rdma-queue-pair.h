@@ -54,6 +54,11 @@ class IrnSackManager {
 
 class RdmaQueuePair : public Object {
    public:
+    enum V5TrafficClass {
+        V5_DATA = 0,
+        V5_PROBE = 1,
+    };
+
     struct WqeBoundary {
         uint32_t app_id;
         uint32_t chunk_id;
@@ -86,10 +91,12 @@ class RdmaQueuePair : public Object {
     bool m_pool_sealed;
     bool m_idle_reported;
     uint32_t m_v5_lane;
+    uint32_t m_v5_traffic_class;
     uint64_t m_expected_wqes;
     uint64_t m_completed_wqes;
     uint64_t m_v5_ecn_cnp_count;
     uint64_t m_v5_last_ecn_cnp_ns;
+    uint64_t m_v5_retry_count;
     std::deque<WqeBoundary> m_wqe_boundaries;
 
     /******************************

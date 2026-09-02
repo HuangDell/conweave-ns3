@@ -38,7 +38,8 @@ public:
 	void AddQueuePair(uint64_t size, uint16_t pg, Ipv4Address _sip, Ipv4Address _dip, uint16_t _sport, uint16_t _dport, uint32_t win, uint64_t baseRtt, int32_t flow_id);
 	Ptr<RdmaQueuePair> AppendPersistentWqe(uint16_t pg, Ipv4Address sip, Ipv4Address dip,
 		uint16_t sport, uint16_t dport, uint32_t win, uint64_t baseRtt, int32_t app_id,
-		uint32_t chunk_id, uint64_t bytes, uint32_t lane);
+		uint32_t chunk_id, uint64_t bytes, uint32_t lane,
+		uint32_t traffic_class = RdmaQueuePair::V5_DATA);
 	void SealPersistentQueuePair(uint32_t dip, uint16_t sport, uint16_t dport, uint16_t pg,
 		uint64_t expected_wqes);
 	

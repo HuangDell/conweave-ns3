@@ -66,6 +66,10 @@ void TrafficScheduler::InitializePorts() {
     persistent_pool_.clear();
     last_persistent_commit_time_ = 0.0;
     persistent_pool_seal_scheduled_ = false;
+    host_probe_entry_ = PersistentPoolEntry();
+    host_probe_entry_created_ = false;
+    host_probe_outstanding_ = false;
+    host_probe_epoch_ = 0;
 }
 
 void TrafficScheduler::Start() {
@@ -74,10 +78,27 @@ void TrafficScheduler::Start() {
         ReadFlowInput();
         Simulator::Schedule(Seconds(0), &TrafficScheduler::ScheduleFlowInputs, this);
     }
+    if (HostSensingEnabled()) {
+        Ptr<RdmaDriver> driver =
+            state_.nodes.Get(config_.host_sensing.target_source)->GetObject<RdmaDriver>();
+        driver->TraceConnectWithoutContext(
+            "WqeEvent", MakeCallback(&TrafficScheduler::HostProbeWqeEvent, this));
+        double warmup_start = config_.flowgen_start_time -
+                              config_.host_sensing.warmup_us / 1000000.0;
+        NS_ASSERT_MSG(warmup_start >= 0.0, "host probe warm-up starts before time zero");
+        Simulator::Schedule(Seconds(warmup_start),
+                            &TrafficScheduler::ScheduleHostProbeEpoch, this);
+        Simulator::Schedule(Seconds(config_.flowgen_stop_time),
+                            &TrafficScheduler::SealHostProbe, this);
+    }
 }
 
 bool TrafficScheduler::PersistentPoolEnabled() const {
     return config_.traffic.v5_qp_pool != 0;
+}
+
+bool TrafficScheduler::HostSensingEnabled() const {
+    return config_.host_sensing.enable != 0;
 }
 
 uint32_t TrafficScheduler::LaneCount() const {
@@ -612,7 +633,18 @@ void TrafficScheduler::ScheduleV5Chunk(ScheduledChunk chunk) {
     current_decision_signal_ = BuildDecisionSignal(
         source, destination, pg, policy, has_bad_lane, bad_lane, bad_fraction,
         decision_time, degrade_time, bytes);
-    uint32_t lane = SelectLane(source, destination, bytes, &current_decision_signal_);
+    uint32_t lane = 0;
+    if (HostSensingEnabled()) {
+        auto fixed_lane = config_.host_sensing.app_lanes.find(app_id);
+        NS_ASSERT_MSG(fixed_lane != config_.host_sensing.app_lanes.end(),
+                      "host sensing requires a frozen lane for every app");
+        lane = fixed_lane->second;
+        NS_ASSERT_MSG(lane < LaneCount(), "frozen app lane is outside the QP pool");
+        current_decision_signal_.weights.assign(LaneCount(), 0.0);
+        current_decision_signal_.weights[lane] = 1.0;
+    } else {
+        lane = SelectLane(source, destination, bytes, &current_decision_signal_);
+    }
     InstallRdmaSubflow(app_id, pg, source, destination, bytes, decision_time,
                        chunk_id, true, lane, policy,
                        has_bad_lane && lane == bad_lane, has_bad_lane, bad_lane,
@@ -837,6 +869,87 @@ void TrafficScheduler::SealPersistentPools() {
                                         entry.source_port, entry.destination_port, entry.pg,
                                         entry.scheduled_wqes);
     }
+}
+
+void TrafficScheduler::ScheduleHostProbeEpoch() {
+    NS_ASSERT_MSG(HostSensingEnabled(), "host probe scheduled while sensing is disabled");
+    uint64_t now_ns = Simulator::Now().GetNanoSeconds();
+    uint64_t stop_ns = static_cast<uint64_t>(config_.flowgen_stop_time * 1000000000.0);
+    if (now_ns >= stop_ns) {
+        return;
+    }
+
+    uint32_t probe_id = host_probe_epoch_++;
+    if (host_probe_outstanding_) {
+        monitor_.RecordHostProbeSkipped(probe_id);
+    } else {
+        if (!host_probe_entry_created_) {
+            host_probe_entry_created_ = true;
+            host_probe_entry_.source = config_.host_sensing.target_source;
+            host_probe_entry_.destination = config_.host_sensing.target_destination;
+            host_probe_entry_.pg = static_cast<uint16_t>(config_.host_sensing.target_pg);
+            host_probe_entry_.lane = config_.host_sensing.target_lane;
+            host_probe_entry_.source_port = source_ports_[host_probe_entry_.source]++;
+            host_probe_entry_.destination_port =
+                destination_ports_[host_probe_entry_.destination]++;
+            host_probe_entry_.qp_key = LetflowRouting::GetQpKey(
+                state_.server_addresses[host_probe_entry_.destination].Get(),
+                host_probe_entry_.source_port, host_probe_entry_.destination_port,
+                host_probe_entry_.pg);
+            LetflowRouting::RegisterPinnedLane(
+                state_.server_addresses[host_probe_entry_.source].Get(),
+                host_probe_entry_.qp_key, host_probe_entry_.lane);
+        }
+
+        uint32_t source = host_probe_entry_.source;
+        uint32_t destination = host_probe_entry_.destination;
+        uint32_t window =
+            config_.cc.has_win
+                ? (config_.cc.global_t == 1
+                       ? state_.max_bdp
+                       : state_.pair_bdp[state_.nodes.Get(source)][state_.nodes.Get(destination)])
+                : 0;
+        uint64_t base_rtt =
+            config_.cc.global_t == 1
+                ? state_.max_rtt
+                : state_.pair_rtt[state_.nodes.Get(source)][state_.nodes.Get(destination)];
+        host_probe_outstanding_ = true;
+        ++host_probe_entry_.scheduled_wqes;
+        Ptr<RdmaDriver> driver = state_.nodes.Get(source)->GetObject<RdmaDriver>();
+        driver->AppendPersistentWqe(
+            host_probe_entry_.pg, state_.server_addresses[source],
+            state_.server_addresses[destination], host_probe_entry_.source_port,
+            host_probe_entry_.destination_port, window, base_rtt,
+            static_cast<int32_t>(config_.host_sensing.target_app_id), probe_id,
+            config_.host_sensing.probe_bytes, host_probe_entry_.lane,
+            RdmaQueuePair::V5_PROBE);
+    }
+
+    Simulator::Schedule(MicroSeconds(config_.host_sensing.probe_period_us),
+                        &TrafficScheduler::ScheduleHostProbeEpoch, this);
+}
+
+void TrafficScheduler::SealHostProbe() {
+    if (!host_probe_entry_created_) {
+        return;
+    }
+    Ptr<RdmaDriver> driver =
+        state_.nodes.Get(host_probe_entry_.source)->GetObject<RdmaDriver>();
+    driver->SealPersistentQueuePair(
+        state_.server_addresses[host_probe_entry_.destination].Get(),
+        host_probe_entry_.source_port, host_probe_entry_.destination_port,
+        host_probe_entry_.pg, host_probe_entry_.scheduled_wqes);
+}
+
+void TrafficScheduler::HostProbeWqeEvent(Ptr<RdmaQueuePair> queue_pair, uint32_t event,
+                                         RdmaQueuePair::WqeBoundary boundary) {
+    (void)boundary;
+    if (queue_pair->m_v5_traffic_class != RdmaQueuePair::V5_PROBE ||
+        event != RdmaHw::WQE_COMPLETE) {
+        return;
+    }
+    NS_ASSERT_MSG(host_probe_outstanding_, "probe completed without an outstanding epoch");
+    host_probe_outstanding_ = false;
 }
 
 void TrafficScheduler::ReadFlowInput() {

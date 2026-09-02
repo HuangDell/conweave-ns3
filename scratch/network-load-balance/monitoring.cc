@@ -1,5 +1,7 @@
 #include "monitoring.h"
 
+#include "host-path-sensing.h"
+
 #include <ns3/capacity-proportional-routing.h>
 #include <ns3/conga-routing.h>
 #include <ns3/conweave-voq.h>
@@ -34,6 +36,10 @@ const char* NativeLbName(uint32_t mode) {
 }
 
 uint64_t PersistentPoolKey(Ptr<RdmaQueuePair> queue_pair) {
+    if (queue_pair->m_v5_traffic_class == RdmaQueuePair::V5_PROBE) {
+        return LetflowRouting::GetQpKey(queue_pair->dip.Get(), queue_pair->sport,
+                                       queue_pair->dport, queue_pair->m_pg);
+    }
     uint32_t source = Settings::ip_to_node_id(queue_pair->sip);
     uint32_t destination = Settings::ip_to_node_id(queue_pair->dip);
     NS_ASSERT_MSG(source <= 0xffff && destination <= 0xffff && queue_pair->m_pg <= 0xffff &&
@@ -47,7 +53,11 @@ uint64_t PersistentPoolKey(Ptr<RdmaQueuePair> queue_pair) {
 }  // namespace
 
 SimulationMonitor::SimulationMonitor(const ExperimentConfig& config, SimulationState& state)
-    : config_(config), state_(state) {}
+    : config_(config), state_(state) {
+    if (config_.host_sensing.enable) {
+        host_path_sensing_.reset(new HostPathSensing(config_, state_));
+    }
+}
 
 SimulationMonitor::~SimulationMonitor() { CloseOutputs(); }
 
@@ -69,8 +79,11 @@ bool SimulationMonitor::OpenCoreOutputs() {
         v5_wqe_output_ = fopen(config_.io.v5_wqe_output_file.c_str(), "w");
         if (v5_wqe_output_) {
             fprintf(v5_wqe_output_,
-                    "time_ns,event,app_id,chunk_id,qp_key,lane,bytes,commit_time_ns,"
-                    "service_start_time_ns,complete_time_ns,cumulative_end_seq,snd_nxt,snd_una\n");
+                    "time_ns,event,traffic_class,app_id,chunk_id,chunk_or_probe_id,src,dst,qp_key,lane,"
+                    "bytes,committed_data_bytes,completed_data_bytes,outstanding_data_bytes,"
+                    "window_min_outstanding_bytes,backlog_threshold_bytes,commit_time_ns,"
+                    "service_start_time_ns,complete_time_ns,"
+                    "cumulative_end_seq,snd_nxt,snd_una,ecn_cnp_count,retry_count\n");
         }
     }
     if (config_.traffic.v5_qp_pool && config_.traffic.v5_qp_state_log) {
@@ -79,7 +92,8 @@ bool SimulationMonitor::OpenCoreOutputs() {
             fprintf(v5_qp_state_output_,
                     "time_ns,event,qp_key,src,dst,pg,lane,sport,dport,snd_nxt,snd_una,"
                     "receiver_next_expected_seq,dcqcn_rate_bps,dcqcn_target_rate_bps,"
-                    "dcqcn_alpha,completed_wqes,expected_wqes\n");
+                    "dcqcn_alpha,completed_wqes,expected_wqes,traffic_class,ecn_cnp_count,"
+                    "retry_count\n");
         }
     }
     return pfc_output_ && fct_output_ && flow_input_output_ && native_diag_open &&
@@ -116,6 +130,7 @@ bool SimulationMonitor::OpenLateOutputs() {
                     "sample_version,rate_transition\n");
         }
     }
+    bool host_sensing_open = !host_path_sensing_ || host_path_sensing_->OpenOutputs();
 
     uplink_output_ = fopen(config_.io.uplink_mon_file.c_str(), "w");
     conn_output_ = fopen(config_.io.conn_mon_file.c_str(), "w");
@@ -127,6 +142,7 @@ bool SimulationMonitor::OpenLateOutputs() {
             config_.traffic.v5_nsub <= 1 || v5_chunk_output_) &&
            (!config_.traffic.v5_estimator_enable || !config_.traffic.v5_estimator_log ||
             v5_estimator_output_) &&
+           host_sensing_open &&
            uplink_output_ && conn_output_ && path_delay_output_;
 }
 
@@ -142,6 +158,9 @@ void SimulationMonitor::CloseOutputs() {
         RdmaHw::s_oooEventLog = NULL;
     }
     NativePathDiagnostics::Close();
+    if (host_path_sensing_) {
+        host_path_sensing_->CloseOutputs();
+    }
     CloseFile(&pfc_output_);
     CloseFile(&fct_output_);
     CloseFile(&flow_input_output_);
@@ -248,6 +267,9 @@ void SimulationMonitor::WqeEventCallback(SimulationMonitor* monitor,
 void SimulationMonitor::ConnectPfcTrace(Ptr<QbbNetDevice> device) {
     device->TraceConnectWithoutContext(
         "QbbPfc", MakeBoundCallback(&SimulationMonitor::PfcTraceCallback, this, device));
+    if (host_path_sensing_) {
+        host_path_sensing_->ConnectDevice(device);
+    }
 }
 
 void SimulationMonitor::ConnectQpComplete(Ptr<RdmaDriver> driver) {
@@ -273,6 +295,9 @@ void SimulationMonitor::StartPeriodicMonitoring() {
     }
     Simulator::Schedule(Seconds(config_.flowgen_start_time),
                         &SimulationMonitor::MonitorPeriodic, this);
+    if (host_path_sensing_) {
+        host_path_sensing_->Start();
+    }
 }
 
 void SimulationMonitor::StartCompletionMonitoring(uint64_t target_completion_count) {
@@ -293,6 +318,9 @@ void SimulationMonitor::RecordPfc(Ptr<QbbNetDevice> device, uint32_t type) {
     fprintf(pfc_output_, "%lu %u %u %u %u\n", Simulator::Now().GetTimeStep(),
             device->GetNode()->GetId(), device->GetNode()->GetNodeType(), device->GetIfIndex(),
             type);
+    if (host_path_sensing_) {
+        host_path_sensing_->RecordPfc(device, type);
+    }
 }
 
 void SimulationMonitor::RecordQpFinish(Ptr<RdmaQueuePair> queue_pair) {
@@ -332,6 +360,9 @@ void SimulationMonitor::RecordPersistentQpEvent(Ptr<RdmaQueuePair> queue_pair, u
     static const char* names[] = {"create", "wake", "idle", "teardown", "packet", "ack"};
     NS_ASSERT_MSG(event <= RdmaHw::PERSISTENT_QP_ACK,
                   "unknown persistent QP lifecycle event");
+    if (host_path_sensing_) {
+        host_path_sensing_->RecordQpEvent(queue_pair, event);
+    }
     RecordQpState(queue_pair, names[event]);
 }
 
@@ -351,13 +382,15 @@ void SimulationMonitor::RecordQpState(Ptr<RdmaQueuePair> queue_pair, const char*
     }
     uint64_t qp_key = PersistentPoolKey(queue_pair);
     fprintf(v5_qp_state_output_,
-            "%lu,%s,%lu,%u,%u,%u,%u,%u,%u,%lu,%lu,%u,%lu,%lu,%.17g,%lu,%lu\n",
+            "%lu,%s,%lu,%u,%u,%u,%u,%u,%u,%lu,%lu,%u,%lu,%lu,%.17g,%lu,%lu,%s,%lu,%lu\n",
             Simulator::Now().GetNanoSeconds(), event, qp_key, source_id, destination_id,
             queue_pair->m_pg, queue_pair->m_v5_lane, queue_pair->sport, queue_pair->dport,
             queue_pair->snd_nxt, queue_pair->snd_una, receiver_expected,
             queue_pair->m_rate.GetBitRate(), queue_pair->mlx.m_targetRate.GetBitRate(),
             queue_pair->mlx.m_alpha, queue_pair->m_completed_wqes,
-            queue_pair->m_expected_wqes);
+            queue_pair->m_expected_wqes,
+            queue_pair->m_v5_traffic_class == RdmaQueuePair::V5_PROBE ? "probe" : "data",
+            queue_pair->m_v5_ecn_cnp_count, queue_pair->m_v5_retry_count);
     fflush(v5_qp_state_output_);
 }
 
@@ -369,18 +402,37 @@ void SimulationMonitor::RecordWqeEvent(Ptr<RdmaQueuePair> queue_pair, uint32_t e
     uint64_t complete_time = event == RdmaHw::WQE_COMPLETE
                                  ? Simulator::Now().GetNanoSeconds()
                                  : 0;
+    if (host_path_sensing_) {
+        host_path_sensing_->RecordWqeEvent(queue_pair, event, boundary);
+    }
     if (v5_wqe_output_) {
-        fprintf(v5_wqe_output_, "%lu,%s,%u,%u,%lu,%u,%lu,%lu,%lu,%lu,%lu,%lu,%lu\n",
+        uint32_t source_id = Settings::ip_to_node_id(queue_pair->sip);
+        uint32_t destination_id = Settings::ip_to_node_id(queue_pair->dip);
+        fprintf(v5_wqe_output_,
+                "%lu,%s,%s,%u,%u,%u,%u,%u,%lu,%u,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,"
+                "%lu,%lu,%lu,%lu,%lu\n",
                 Simulator::Now().GetNanoSeconds(),
-                event == RdmaHw::WQE_COMMIT ? "commit" : "complete", boundary.app_id,
-                boundary.chunk_id, qp_key, queue_pair->m_v5_lane, boundary.bytes,
+                event == RdmaHw::WQE_COMMIT ? "commit" : "complete",
+                queue_pair->m_v5_traffic_class == RdmaQueuePair::V5_PROBE ? "probe" : "data",
+                boundary.app_id, boundary.chunk_id, boundary.chunk_id, source_id,
+                destination_id, qp_key,
+                queue_pair->m_v5_lane, boundary.bytes,
+                host_path_sensing_ ? host_path_sensing_->CommittedDataBytes() : 0,
+                host_path_sensing_ ? host_path_sensing_->CompletedDataBytes() : 0,
+                host_path_sensing_ ? host_path_sensing_->OutstandingDataBytes() : 0,
+                host_path_sensing_ ? host_path_sensing_->WindowMinOutstandingBytes() : 0,
+                host_path_sensing_ ? host_path_sensing_->BacklogThresholdBytes() : 0,
                 boundary.commit_time.GetNanoSeconds(),
                 boundary.service_start_time.GetNanoSeconds(), complete_time,
-                boundary.cumulative_end_seq, queue_pair->snd_nxt, queue_pair->snd_una);
+                boundary.cumulative_end_seq, queue_pair->snd_nxt, queue_pair->snd_una,
+                queue_pair->m_v5_ecn_cnp_count, queue_pair->m_v5_retry_count);
         fflush(v5_wqe_output_);
     }
     RecordQpState(queue_pair, event == RdmaHw::WQE_COMMIT ? "wqe_commit" : "wqe_complete");
     if (event != RdmaHw::WQE_COMPLETE) {
+        return;
+    }
+    if (queue_pair->m_v5_traffic_class == RdmaQueuePair::V5_PROBE) {
         return;
     }
 
@@ -400,6 +452,12 @@ void SimulationMonitor::RecordWqeEvent(Ptr<RdmaQueuePair> queue_pair, uint32_t e
             boundary.app_id);
     Settings::cnt_finished_flows++;
     fflush(fct_output_);
+}
+
+void SimulationMonitor::RecordHostProbeSkipped(uint32_t probe_id) {
+    if (host_path_sensing_) {
+        host_path_sensing_->RecordProbeSkipped(probe_id);
+    }
 }
 
 void SimulationMonitor::MonitorCnp(Ptr<RdmaHw> hardware) {
@@ -532,7 +590,11 @@ void MonitorBuffer(FILE* output, SimulationState* state, uint64_t monitor_end,
 #endif
 
 void SimulationMonitor::MonitorCompletion() {
-    if (Settings::cnt_finished_flows >= target_completion_count_) {
+    bool horizon_reached = !host_path_sensing_ ||
+                           Simulator::Now() >= Seconds(config_.flowgen_stop_time);
+    bool probes_accounted = !host_path_sensing_ || host_path_sensing_->ReadyToStop();
+    if (Settings::cnt_finished_flows >= target_completion_count_ &&
+        horizon_reached && probes_accounted) {
         std::cout << "\n*** Simulator is enforced to be finished, finished so far: "
                   << Settings::cnt_finished_flows << "/ total: " << target_completion_count_
                   << ", Time:" << Simulator::Now() << std::endl;

@@ -247,7 +247,7 @@ void RdmaHw::AddQueuePair(uint64_t size, uint16_t pg, Ipv4Address sip, Ipv4Addre
 Ptr<RdmaQueuePair> RdmaHw::AppendPersistentWqe(
     uint16_t pg, Ipv4Address sip, Ipv4Address dip, uint16_t sport, uint16_t dport,
     uint32_t win, uint64_t baseRtt, int32_t app_id, uint32_t chunk_id, uint64_t bytes,
-    uint32_t lane) {
+    uint32_t lane, uint32_t traffic_class) {
     uint64_t key = GetQpKey(dip.Get(), sport, dport, pg);
     Ptr<RdmaQueuePair> qp = GetQp(key);
     bool created = qp == NULL;
@@ -256,10 +256,12 @@ Ptr<RdmaQueuePair> RdmaHw::AppendPersistentWqe(
         qp = CreateQueuePair(0, pg, sip, dip, sport, dport, win, baseRtt, app_id);
         qp->m_persistent = true;
         qp->m_v5_lane = lane;
+        qp->m_v5_traffic_class = traffic_class;
     } else {
         NS_ASSERT_MSG(qp->m_persistent, "persistent append collided with a legacy QP");
         NS_ASSERT_MSG(qp->sip == sip && qp->dip == dip && qp->m_pg == pg &&
-                          qp->sport == sport && qp->dport == dport && qp->m_v5_lane == lane,
+                          qp->sport == sport && qp->dport == dport && qp->m_v5_lane == lane &&
+                          qp->m_v5_traffic_class == traffic_class,
                       "persistent QP identity or lane changed");
         NS_ASSERT_MSG(!qp->m_pool_sealed, "cannot append to a sealed persistent QP");
         was_idle = qp->IsPersistentIdle();
@@ -811,7 +813,12 @@ uint16_t RdmaHw::EtherToPpp(uint16_t proto) {
     return 0;
 }
 
-void RdmaHw::RecoverQueue(Ptr<RdmaQueuePair> qp) { qp->snd_nxt = qp->snd_una; }
+void RdmaHw::RecoverQueue(Ptr<RdmaQueuePair> qp) {
+    if (qp->snd_nxt > qp->snd_una) {
+        ++qp->m_v5_retry_count;
+    }
+    qp->snd_nxt = qp->snd_una;
+}
 
 void RdmaHw::CompletePersistentWqes(Ptr<RdmaQueuePair> qp) {
     NS_ASSERT_MSG(qp->m_persistent, "WQE completion requires a persistent QP");
