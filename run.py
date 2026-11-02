@@ -14,10 +14,14 @@ from datetime import datetime
 import sys
 import os
 import argparse
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from scripts.v5.common.job_membership import read_inputs
 from datetime import date
 
 # randomID
-random.seed(datetime.now())
+random.seed(datetime.now().timestamp())
 MAX_RAND_RANGE = 1000000000
 
 # config template
@@ -330,12 +334,12 @@ def runtime_binary_metadata(path):
     }
 
 
-def git_metadata():
+def git_metadata(cwd=None):
     try:
         commit = subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], text=True).strip()
+            ["git", "rev-parse", "HEAD"], text=True, cwd=cwd).strip()
         dirty = bool(subprocess.check_output(
-            ["git", "status", "--porcelain"], text=True).strip())
+            ["git", "status", "--porcelain"], text=True, cwd=cwd).strip())
     except (OSError, subprocess.CalledProcessError):
         commit = "unknown"
         dirty = None
@@ -404,6 +408,7 @@ def main():
                         default='leaf_spine_128_100G', help="the name of the topology file (default: leaf_spine_128_100G_OS2)")
     parser.add_argument('--cdf', dest='cdf', action='store',
                         default='AliStorage2019', help="the name of the cdf file (default: AliStorage2019)")
+    parser.add_argument('--job-file', default=None, help='Frozen S6 job membership CSV')
     parser.add_argument('--flow-file', dest='flow_file', action='store',
                         default=None, help="use an existing ConWeave flow file instead of generating one from a CDF")
     parser.add_argument('--enforce_win', dest='enforce_win', action='store',
@@ -544,6 +549,8 @@ def main():
     #                     type=int, default=1000, help="timeout value of ConWeave Tx for CLEAR signal (default: 1000us)")
 
     args = parser.parse_args()
+    if args.job_file and not args.flow_file:
+        raise ValueError("--job-file requires explicit --flow-file")
 
     # input parameters
     cc_mode = cc_modes[args.cc]
@@ -784,6 +791,12 @@ def main():
     trace_metadata = validate_flow_file(
         flow_file, n_host, flowgen_start_time, flowgen_stop_time)
 
+    job_metadata = None
+    if args.job_file:
+        if not args.flow_file:
+            raise ValueError("--job-file requires explicit --flow-file")
+        _, _, job_metadata = read_inputs(flow_file, args.job_file)
+
     # sanity check - bandwidth
     with open("config/{topo}.txt".format(topo=args.topo), 'r') as f_topo:
         first_line = f_topo.readline().split(" ")
@@ -975,6 +988,9 @@ def main():
         "status": "prepared",
         "created_at": datetime.now().astimezone().isoformat(),
         "git": git_metadata(),
+        "parent_git": git_metadata(str(Path(__file__).resolve().parents[2])),
+        "job_trace": job_metadata,
+        "command": sys.argv,
         "binary": runtime_binary_metadata(SIM_BINARY) if exists(SIM_BINARY) else {
             "absolute_path": os.path.abspath(SIM_BINARY), "sha256": None,
             "runtime_sha256": None, "runtime_artifacts": [],
@@ -1080,6 +1096,7 @@ def main():
     manifest["status"] = "simulation_complete"
     manifest["completed_at"] = datetime.now().astimezone().isoformat()
     manifest["completion"] = parse_completion_counts(output_log, fct_output)
+    manifest["completion"]["job_membership_available"] = job_metadata is not None
     write_json(manifest_path, manifest)
 
     ####################################################
