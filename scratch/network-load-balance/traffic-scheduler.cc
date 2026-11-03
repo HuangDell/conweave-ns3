@@ -42,7 +42,7 @@ bool TrafficScheduler::LoadFlowFile() {
         return false;
     }
     target_completion_count_ = CalculateTargetCompletionCount();
-    if (config_.traffic.v5_nsub > 1 || PersistentPoolEnabled()) {
+    if (config_.traffic.v5_nsub > 1 || PersistentPoolEnabled() || config_.monitoring.native_resource_log) {
         std::cerr << "V5_TARGET_COMPLETION_COUNT\t\t" << target_completion_count_ << "\n";
     }
     return true;

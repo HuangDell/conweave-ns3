@@ -139,6 +139,8 @@ struct MonitoringConfig {
     uint64_t cnp_bucket_ns = 100000;
     uint64_t irn_start_ns = 0;
     uint64_t irn_bucket_ns = 100000;
+    uint32_t native_resource_log = 0;
+    uint32_t monitor_until_complete = 0;
     uint32_t native_diag_log = 0;
     uint64_t native_diag_interval_ns = 10000;
 };
@@ -165,6 +167,10 @@ struct IoConfig {
     std::string v5_estimator_output_file = "v5_estimator.csv";
     std::string native_path_counter_output_file = "native_path_counter.csv";
     std::string native_event_output_file = "native_events.csv";
+    std::string native_resource_output_file = "native_resources.csv";
+    std::string native_qp_output_file = "native_qp.csv";
+    std::string native_pfc_output_file = "native_pfc.csv";
+    std::string native_path_map_output_file = "native_path_map.csv";
     std::string host_sensing_output_file = "host_sensing.csv";
     std::string host_probe_output_file = "host_probe.csv";
     std::string host_path_truth_output_file = "host_path_truth.csv";

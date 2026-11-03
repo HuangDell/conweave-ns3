@@ -218,6 +218,8 @@ TypeId QbbNetDevice::GetTypeId(void) {
                             MakeTraceSourceAccessor(&QbbNetDevice::m_traceDrop))
             .AddTraceSource("RdmaQpDequeue", "A qp dequeue a packet.",
                             MakeTraceSourceAccessor(&QbbNetDevice::m_traceQpDequeue))
+            .AddTraceSource("PfcState", "Actual PG pause state transitions.",
+                            MakeTraceSourceAccessor(&QbbNetDevice::m_tracePfcState))
             .AddTraceSource("QbbPfc", "get a PFC packet. 0: resume, 1: pause",
                             MakeTraceSourceAccessor(&QbbNetDevice::m_tracePfc));
 
@@ -340,7 +342,9 @@ void QbbNetDevice::DequeueAndTransmit(void) {
 void QbbNetDevice::Resume(unsigned qIndex) {
     NS_LOG_FUNCTION(this << qIndex);
     NS_ASSERT_MSG(m_paused[qIndex], "Must be PAUSEd");
+    bool was_paused = m_paused[qIndex];
     m_paused[qIndex] = false;
+    if (was_paused) m_tracePfcState(qIndex, false);
     NS_LOG_INFO("Node " << m_node->GetId() << " dev " << m_ifIndex << " queue " << qIndex
                         << " resumed at " << Simulator::Now().GetSeconds());
     DequeueAndTransmit();
@@ -372,6 +376,9 @@ void QbbNetDevice::Receive(Ptr<Packet> packet) {
         // std::cerr << "PFC!!" << std::endl;
         if (ch.pfc.time > 0) {
             m_tracePfc(1);
+            if (!m_paused[qIndex]) {
+                m_tracePfcState(qIndex, true);
+            }
             m_paused[qIndex] = true;
             Simulator::Cancel(m_resumeEvt[qIndex]);
             m_resumeEvt[qIndex] =
@@ -439,6 +446,11 @@ bool QbbNetDevice::Attach(Ptr<QbbChannel> ch) {
     return true;
 }
 
+uint64_t QbbNetDevice::GetTxElapsedBusyTimeNs(void) const {
+    uint64_t now = Simulator::Now().GetNanoSeconds();
+    return m_txBusyTimeNs - (m_txSerializationEndNs > now ? m_txSerializationEndNs - now : 0);
+}
+
 bool QbbNetDevice::TransmitStart(Ptr<Packet> p) {
     NS_LOG_FUNCTION(this << p);
     NS_LOG_LOGIC("UID is " << p->GetUid() << ")");
@@ -455,6 +467,7 @@ bool QbbNetDevice::TransmitStart(Ptr<Packet> p) {
     // v4 residual-capacity estimator: txTime uses the (possibly degraded) m_bps, so
     // departedBytes*8 / busyTimeNs recovers the effective serialization rate c_eff.
     m_txBusyTimeNs += txTime.GetNanoSeconds();
+    m_txSerializationEndNs = Simulator::Now().GetNanoSeconds() + txTime.GetNanoSeconds();
     m_txDepartedBytes += p->GetSize();
     Time txCompleteTime = txTime + m_tInterframeGap;
     NS_LOG_LOGIC("Schedule TransmitCompleteEvent in " << txCompleteTime.GetSeconds() << "sec");

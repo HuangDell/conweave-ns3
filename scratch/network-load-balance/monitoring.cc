@@ -1,6 +1,7 @@
 #include "monitoring.h"
 
 #include "host-path-sensing.h"
+#include "native-resource-monitor.h"
 
 #include <ns3/capacity-proportional-routing.h>
 #include <ns3/conga-routing.h>
@@ -23,6 +24,7 @@ NS_LOG_COMPONENT_DEFINE("NetworkLoadBalanceMonitoring");
 namespace {
 
 const char* NativeLbName(uint32_t mode) {
+    if (mode == LbMode::kEcmp) return "fecmp";
     if (mode == LbMode::kConga) {
         return "conga";
     }
@@ -54,6 +56,9 @@ uint64_t PersistentPoolKey(Ptr<RdmaQueuePair> queue_pair) {
 
 SimulationMonitor::SimulationMonitor(const ExperimentConfig& config, SimulationState& state)
     : config_(config), state_(state) {
+    if (config_.monitoring.native_resource_log) {
+        native_resources_.reset(new NativeResourceMonitor(config_, state_));
+    }
     if (config_.host_sensing.enable) {
         host_path_sensing_.reset(new HostPathSensing(config_, state_));
     }
@@ -73,7 +78,8 @@ bool SimulationMonitor::OpenCoreOutputs() {
         native_diag_open = NativePathDiagnostics::Open(
             NativeLbName(config_.lb.mode), config_.io.native_path_counter_output_file,
             config_.io.native_event_output_file,
-            NanoSeconds(config_.monitoring.native_diag_interval_ns));
+            NanoSeconds(config_.monitoring.native_diag_interval_ns),
+            config_.monitoring.native_resource_log ? config_.io.native_path_map_output_file : "");
     }
     if (config_.traffic.v5_qp_pool && config_.traffic.v5_wqe_log) {
         v5_wqe_output_ = fopen(config_.io.v5_wqe_output_file.c_str(), "w");
@@ -96,7 +102,8 @@ bool SimulationMonitor::OpenCoreOutputs() {
                     "retry_count\n");
         }
     }
-    return pfc_output_ && fct_output_ && flow_input_output_ && native_diag_open &&
+    bool native_resources_open = !native_resources_ || native_resources_->Open();
+    return native_resources_open && pfc_output_ && fct_output_ && flow_input_output_ && native_diag_open &&
            (config_.cc.mode != 1 || cnp_output_) &&
            (!config_.traffic.v5_qp_pool || !config_.traffic.v5_wqe_log || v5_wqe_output_) &&
            (!config_.traffic.v5_qp_pool || !config_.traffic.v5_qp_state_log ||
@@ -154,6 +161,18 @@ void SimulationMonitor::CloseFile(FILE** file) {
 }
 
 void SimulationMonitor::CloseOutputs() {
+    if (periodic_started_ && config_.monitoring.monitor_until_complete) {
+        WritePeriodicSnapshot();
+        if (cnp_output_) {
+            for (uint32_t i = 0; i < state_.nodes.GetN(); ++i) {
+                if (state_.nodes.Get(i)->GetNodeType() == 0) {
+                    WriteCnpSnapshot(state_.nodes.Get(i)->GetObject<RdmaDriver>()->m_rdma);
+                }
+            }
+        }
+    }
+    periodic_started_ = false;
+    if (native_resources_) native_resources_->Close();
     if (RdmaHw::s_oooEventLog == ooo_event_output_) {
         RdmaHw::s_oooEventLog = NULL;
     }
@@ -265,6 +284,7 @@ void SimulationMonitor::WqeEventCallback(SimulationMonitor* monitor,
 }
 
 void SimulationMonitor::ConnectPfcTrace(Ptr<QbbNetDevice> device) {
+    if (native_resources_) native_resources_->ConnectDevice(device);
     device->TraceConnectWithoutContext(
         "QbbPfc", MakeBoundCallback(&SimulationMonitor::PfcTraceCallback, this, device));
     if (host_path_sensing_) {
@@ -273,6 +293,7 @@ void SimulationMonitor::ConnectPfcTrace(Ptr<QbbNetDevice> device) {
 }
 
 void SimulationMonitor::ConnectQpComplete(Ptr<RdmaDriver> driver) {
+    if (native_resources_) native_resources_->ConnectDriver(driver);
     driver->TraceConnectWithoutContext(
         "QpComplete", MakeBoundCallback(&SimulationMonitor::QpCompleteCallback, this));
     driver->TraceConnectWithoutContext(
@@ -288,6 +309,7 @@ void SimulationMonitor::StartCnpMonitoring(Ptr<RdmaHw> hardware) {
 }
 
 void SimulationMonitor::StartPeriodicMonitoring() {
+    periodic_started_ = true;
     if (config_.monitoring.native_diag_log) {
         NativePathDiagnostics::Start(
             Seconds(config_.flowgen_start_time),
@@ -460,7 +482,7 @@ void SimulationMonitor::RecordHostProbeSkipped(uint32_t probe_id) {
     }
 }
 
-void SimulationMonitor::MonitorCnp(Ptr<RdmaHw> hardware) {
+void SimulationMonitor::WriteCnpSnapshot(Ptr<RdmaHw> hardware) {
     if (hardware->cnp_total > 0) {
         fprintf(cnp_output_, "%lu %u %u %u %u\n", Simulator::Now().GetNanoSeconds(),
                 hardware->m_node->GetId(), hardware->cnp_by_ecn, hardware->cnp_by_ooo,
@@ -470,11 +492,16 @@ void SimulationMonitor::MonitorCnp(Ptr<RdmaHw> hardware) {
         hardware->cnp_by_ooo = 0;
         hardware->cnp_total = 0;
     }
+}
+
+void SimulationMonitor::MonitorCnp(Ptr<RdmaHw> hardware) {
+    WriteCnpSnapshot(hardware);
     Simulator::Schedule(NanoSeconds(config_.monitoring.cnp_bucket_ns),
                         &SimulationMonitor::MonitorCnp, this, hardware);
 }
 
-void SimulationMonitor::MonitorPeriodic() {
+void SimulationMonitor::WritePeriodicSnapshot() {
+    if (native_resources_) native_resources_->Sample();
     uint64_t now = Simulator::Now().GetNanoSeconds();
     for (const auto& tor_to_interfaces : state_.tor_uplink_interfaces) {
         Ptr<Node> node = state_.nodes.Get(tor_to_interfaces.first);
@@ -534,7 +561,12 @@ void SimulationMonitor::MonitorPeriodic() {
         fprintf(conn_output_, "%lu,%u,%lu,%lu\n", now, i, qp_count, active_count);
     }
 
-    if (Simulator::Now() < Seconds(config_.flowgen_stop_time + 0.05)) {
+}
+
+void SimulationMonitor::MonitorPeriodic() {
+    WritePeriodicSnapshot();
+    if (config_.monitoring.monitor_until_complete ||
+        Simulator::Now() < Seconds(config_.flowgen_stop_time + 0.05)) {
         Simulator::Schedule(NanoSeconds(config_.monitoring.switch_interval_ns),
                             &SimulationMonitor::MonitorPeriodic, this);
     }

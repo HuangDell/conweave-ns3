@@ -27,8 +27,11 @@ uint32_t PackPath(const uint8_t path_ports[4]) {
 }
 
 void RegisterPath(const ExperimentConfig& config, Ptr<SwitchNode> source_switch,
-                  uint32_t destination_tor, uint32_t path_id, uint32_t hop_count) {
-    NativePathDiagnostics::RegisterPath(source_switch->GetId(), destination_tor, path_id);
+                  uint32_t destination_tor, uint32_t path_id, uint32_t hop_count,
+                  uint32_t next_node) {
+    uint32_t out_port = LetflowRouting::GetOutPortFromPath(path_id, 0);
+    NativePathDiagnostics::RegisterPath(source_switch->GetId(), destination_tor,
+        config.lb.mode == LbMode::kEcmp ? out_port : path_id, out_port, next_node);
     if (config.lb.mode == LbMode::kConga) {
         source_switch->m_mmu->m_congaRouting.m_congaRoutingTable[destination_tor].insert(path_id);
     } else if (config.lb.mode == LbMode::kLetflow) {
@@ -66,7 +69,8 @@ void ConfigureLoadBalancer(const ExperimentConfig& config, SimulationState& stat
         }
     }
 
-    if (UsesTorToTorRouting(config.lb.mode)) {
+    if (UsesTorToTorRouting(config.lb.mode) ||
+        (config.lb.mode == LbMode::kEcmp && config.monitoring.native_diag_log)) {
         NS_LOG_INFO("Configuring Load Balancer's Switches");
         for (const auto& link : state.link_pairs) {
             Ptr<Node> possible_host = state.nodes.Get(link.first);
@@ -110,7 +114,7 @@ void ConfigureLoadBalancer(const ExperimentConfig& config, SimulationState& stat
                             state.neighbor_interfaces[next_1][next_hops_2[0]].idx;
                         path_ports[0] = static_cast<uint8_t>(output_1);
                         path_ports[1] = static_cast<uint8_t>(output_2);
-                        RegisterPath(config, source_switch, destination_tor, PackPath(path_ports), 2);
+                        RegisterPath(config, source_switch, destination_tor, PackPath(path_ports), 2, next_1->GetId());
                         continue;
                     }
 
@@ -126,7 +130,7 @@ void ConfigureLoadBalancer(const ExperimentConfig& config, SimulationState& stat
                             path_ports[1] = static_cast<uint8_t>(output_2);
                             path_ports[2] = static_cast<uint8_t>(output_3);
                             RegisterPath(config, source_switch, destination_tor,
-                                         PackPath(path_ports), 3);
+                                         PackPath(path_ports), 3, next_1->GetId());
                             continue;
                         }
 
@@ -143,7 +147,7 @@ void ConfigureLoadBalancer(const ExperimentConfig& config, SimulationState& stat
                                 path_ports[2] = static_cast<uint8_t>(output_3);
                                 path_ports[3] = static_cast<uint8_t>(output_4);
                                 RegisterPath(config, source_switch, destination_tor,
-                                             PackPath(path_ports), 4);
+                                             PackPath(path_ports), 4, next_1->GetId());
                                 continue;
                             }
                             printf("Too large topology?\n");

@@ -186,6 +186,18 @@ bool LoadExperimentConfig(const std::string& path, ExperimentConfig* config) {
             conf >> config->host_sensing.min_baseline_samples;
             std::cerr << "HOST_SENSING_MIN_BASELINE_SAMPLES\t"
                       << config->host_sensing.min_baseline_samples << "\n";
+        } else if (key == "NATIVE_RESOURCE_LOG") {
+            conf >> config->monitoring.native_resource_log;
+        } else if (key == "MONITOR_UNTIL_COMPLETE") {
+            conf >> config->monitoring.monitor_until_complete;
+        } else if (key == "NATIVE_RESOURCE_OUTPUT_FILE") {
+            conf >> config->io.native_resource_output_file;
+        } else if (key == "NATIVE_QP_OUTPUT_FILE") {
+            conf >> config->io.native_qp_output_file;
+        } else if (key == "NATIVE_PFC_OUTPUT_FILE") {
+            conf >> config->io.native_pfc_output_file;
+        } else if (key == "NATIVE_PATH_MAP_OUTPUT_FILE") {
+            conf >> config->io.native_path_map_output_file;
         } else if (key == "NATIVE_DIAG_LOG") {
             conf >> config->monitoring.native_diag_log;
             std::cerr << "NATIVE_DIAG_LOG\t\t\t"

@@ -257,6 +257,13 @@ void SwitchNode::SendToDevContinue(Ptr<Packet> p, CustomHeader &ch) {
                                                            // would be 3 (refer to trafficgen)
         }
 
+        if (Settings::lb_mode == 0 && NativePathDiagnostics::IsEnabled() &&
+            ch.l3Prot == 0x11 && m_isToR && m_isToR_hostIP.count(ch.sip)) {
+            auto destination = Settings::hostIp2SwitchId.find(ch.dip);
+            if (destination != Settings::hostIp2SwitchId.end() && destination->second != GetId()) {
+                NativePathDiagnostics::RecordEcmpAssignment(p, ch, GetId(), destination->second, idx);
+            }
+        }
         DoSwitchSend(p, ch, idx, qIndex);  // m_devices[idx]->SwitchSend(qIndex, p, ch);
         return;
     }

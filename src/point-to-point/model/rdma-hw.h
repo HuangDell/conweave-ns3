@@ -8,6 +8,7 @@
 
 #include <unordered_map>
 #include <unordered_set>
+#include "ns3/traced-callback.h"
 
 #include "qbb-net-device.h"
 #include "rdma-queue-pair.h"
@@ -62,6 +63,7 @@ class RdmaHw : public Object {
     typedef Callback<void, Ptr<RdmaQueuePair>, uint32_t> PersistentQpEventCallback;
     typedef Callback<void, Ptr<RdmaQueuePair>, uint32_t, RdmaQueuePair::WqeBoundary>
         WqeEventCallback;
+    TracedCallback<Ptr<RdmaQueuePair>> m_traceQpRegistered;
     QpCompleteCallback m_qpCompleteCallback;
     PersistentQpEventCallback m_persistentQpEventCallback;
     WqeEventCallback m_wqeEventCallback;

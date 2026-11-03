@@ -101,6 +101,12 @@ HOST_SENSING_PROBE_PERIOD_US {host_sensing_probe_period_us}
 HOST_SENSING_PROBE_TIMEOUT_US {host_sensing_probe_timeout_us}
 HOST_SENSING_WARMUP_US {host_sensing_warmup_us}
 HOST_SENSING_MIN_BASELINE_SAMPLES {host_sensing_min_baseline_samples}
+NATIVE_RESOURCE_LOG {native_resource_log}
+MONITOR_UNTIL_COMPLETE {monitor_until_complete}
+NATIVE_RESOURCE_OUTPUT_FILE mix/output/{id}/{id}_out_native_resources.csv
+NATIVE_QP_OUTPUT_FILE mix/output/{id}/{id}_out_native_qp.csv
+NATIVE_PFC_OUTPUT_FILE mix/output/{id}/{id}_out_native_pfc.csv
+NATIVE_PATH_MAP_OUTPUT_FILE mix/output/{id}/{id}_out_native_path_map.csv
 NATIVE_DIAG_LOG {native_diag_log}
 NATIVE_DIAG_INTERVAL_NS {native_diag_interval_ns}
 NATIVE_PATH_COUNTER_OUTPUT_FILE mix/output/{id}/{id}_out_native_path_counter.csv
@@ -529,6 +535,10 @@ def main():
                         type=int, default=5000)
     parser.add_argument('--host_sensing_min_baseline_samples',
                         dest='host_sensing_min_baseline_samples', type=int, default=20)
+    parser.add_argument('--native_resource_log', type=int, choices=(0, 1), default=0,
+                        help='log native QP lifecycle, NIC/MMU resources and PFC intervals')
+    parser.add_argument('--monitor_until_complete', type=int, choices=(0, 1), default=0,
+                        help='retain periodic observations until simulation termination')
     parser.add_argument('--native_diag_log', dest='native_diag_log', action='store', type=int,
                         default=0,
                         help="enable native LB path counters and event diagnostics (default: 0)")
@@ -650,8 +660,11 @@ def main():
         raise Exception("CONFIG ERROR : --native_diag_log must be 0 or 1")
     if args.native_diag_interval_ns <= 0:
         raise Exception("CONFIG ERROR : --native_diag_interval_ns must be > 0")
-    if args.native_diag_log and args.lb not in {"conga", "letflow", "conweave"}:
-        raise Exception("CONFIG ERROR : native diagnostics require conga, letflow, or conweave")
+    if args.native_diag_log and args.lb not in {"fecmp", "conga", "letflow", "conweave"}:
+        raise Exception("CONFIG ERROR : native diagnostics require fecmp, conga, letflow, or conweave")
+    if args.native_resource_log and (args.lb not in {"fecmp", "conga", "letflow", "conweave"} or
+                                     args.v5_qp_pool or args.v5_nsub != 1 or args.v5_chunk_bytes):
+        raise ValueError("native resources require one native QP per input row, without v5 pool/chunks")
     if args.native_diag_log and args.v5_qp_pool:
         raise Exception("CONFIG ERROR : native diagnostics require the native non-v5 substrate")
     if v5_policy in {"online-proportional", "queue-ecn-binary"} and not args.v5_estimator_enable:
@@ -972,6 +985,8 @@ def main():
                                         host_sensing_probe_timeout_us=args.host_sensing_probe_timeout_us,
                                         host_sensing_warmup_us=args.host_sensing_warmup_us,
                                         host_sensing_min_baseline_samples=args.host_sensing_min_baseline_samples,
+                                        native_resource_log=args.native_resource_log,
+                                        monitor_until_complete=args.monitor_until_complete,
                                         native_diag_log=args.native_diag_log,
                                         native_diag_interval_ns=args.native_diag_interval_ns,
                                         random_seed=args.seed)
@@ -1050,6 +1065,9 @@ def main():
             "host_sensing_probe_timeout_us": args.host_sensing_probe_timeout_us,
             "host_sensing_warmup_us": args.host_sensing_warmup_us,
             "host_sensing_min_baseline_samples": args.host_sensing_min_baseline_samples,
+            "native_resource_log": args.native_resource_log,
+            "monitor_until_complete": args.monitor_until_complete,
+            "sw_monitoring_interval_ns": args.sw_monitoring_interval,
             "native_diag_log": args.native_diag_log,
             "native_diag_interval_ns": args.native_diag_interval_ns,
             "degrade_direction": args.degrade_direction,

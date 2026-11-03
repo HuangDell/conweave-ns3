@@ -128,6 +128,8 @@ TypeId RdmaHw::GetTypeId(void) {
                           MakeTimeAccessor(&RdmaHw::m_irn_rtoHigh), MakeTimeChecker())
             .AddAttribute("IrnBdp", "BDP Limit for IRN in Bytes", UintegerValue(100000),
                           MakeUintegerAccessor(&RdmaHw::m_irn_bdp), MakeUintegerChecker<uint32_t>())
+            .AddTraceSource("QpRegistered", "A sending QP has been registered with its NIC.",
+                            MakeTraceSourceAccessor(&RdmaHw::m_traceQpRegistered))
             .AddAttribute("L2Timeout", "Sender's timer of waiting for the ack",
                           TimeValue(MilliSeconds(4)), MakeTimeAccessor(&RdmaHw::m_waitAckTimeout),
                           MakeTimeChecker());
@@ -233,6 +235,7 @@ void RdmaHw::RegisterQueuePair(Ptr<RdmaQueuePair> qp, bool notify_nic) {
         qp->tmly.m_curRate = m_bps;
     }
 
+    m_traceQpRegistered(qp);
     if (notify_nic) {
         m_nic[nic_idx].dev->NewQp(qp);
     }

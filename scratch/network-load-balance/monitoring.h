@@ -55,7 +55,9 @@ class SimulationMonitor {
     void RecordWqeEvent(ns3::Ptr<ns3::RdmaQueuePair> queue_pair, uint32_t event,
                         ns3::RdmaQueuePair::WqeBoundary boundary);
     void MonitorCnp(ns3::Ptr<ns3::RdmaHw> hardware);
+    void WriteCnpSnapshot(ns3::Ptr<ns3::RdmaHw> hardware);
     void MonitorPeriodic();
+    void WritePeriodicSnapshot();
     void MonitorCompletion();
 
     void PrintModeHistory();
@@ -69,8 +71,10 @@ class SimulationMonitor {
     SimulationState& state_;
     uint64_t target_completion_count_ = 0;
     bool history_printed_ = false;
+    bool periodic_started_ = false;
     std::map<uint64_t, uint64_t> estimator_true_rates_;
     std::unique_ptr<class HostPathSensing> host_path_sensing_;
+    std::unique_ptr<class NativeResourceMonitor> native_resources_;
 
     FILE* pfc_output_ = NULL;
     FILE* fct_output_ = NULL;

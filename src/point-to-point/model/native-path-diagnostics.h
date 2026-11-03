@@ -14,13 +14,17 @@ namespace ns3 {
 class NativePathDiagnostics {
   public:
     static bool Open(const std::string& lb, const std::string& path_counter_file,
-                     const std::string& event_file, Time interval);
+                     const std::string& event_file, Time interval,
+                     const std::string& path_map_file = "");
     static void Start(Time start, Time stop);
     static void Close();
     static bool IsEnabled();
 
     static void RegisterPath(uint32_t source_tor, uint32_t destination_tor,
-                             uint32_t path_id);
+                             uint32_t path_id, uint32_t out_port = 0, uint32_t next_node = 0);
+    static void RecordEcmpAssignment(Ptr<Packet> packet, const CustomHeader& header,
+                                     uint32_t source_tor, uint32_t destination_tor,
+                                     uint32_t out_port);
     static void RecordAssignment(Ptr<Packet> packet, const CustomHeader& header,
                                  uint32_t source_tor, uint32_t destination_tor,
                                  uint32_t path_id);
