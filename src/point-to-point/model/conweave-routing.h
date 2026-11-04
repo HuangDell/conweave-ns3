@@ -78,6 +78,9 @@ namespace ns3 {
 
 /*------ Stateful Objects ----*/
 struct conweaveTxState {
+    bool _diagnosticPendingPath = false;
+    uint32_t _diagnosticOldPath = 0;
+    uint64_t _diagnosticTailNs = 0;
     uint64_t _flowkey = 0;
     bool _stabilized = true; /* make new connection always starts with epoch 1 */
     Time _activeTime = CW_MIN_TIME;

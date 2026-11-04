@@ -601,6 +601,17 @@ void ConWeaveRouting::RouteInput(Ptr<Packet> p, CustomHeader &ch) {
                 tx_md.currPath = txEntry._pathId;
             }
 
+            if (txEntry._diagnosticPendingPath && tx_md.currPath != txEntry._diagnosticOldPath) {
+                NativePathDiagnostics::RecordEvent(srcToRId, dstToRId, ch, "new_path_first",
+                    txEntry._diagnosticOldPath, tx_md.currPath,
+                    now.GetNanoSeconds() - txEntry._diagnosticTailNs, "after_tail");
+                txEntry._diagnosticPendingPath = false;
+            }
+            if (tx_md.flagReplyTimeout && txEntry._pathId != tx_md.currPath) {
+                txEntry._diagnosticPendingPath = true;
+                txEntry._diagnosticOldPath = tx_md.currPath;
+                txEntry._diagnosticTailNs = now.GetNanoSeconds();
+            }
             if (tx_md.flagExpired) {
                 const char* reason = tx_md.newConnection ? "new_connection" : "entry_expired";
                 NativePathDiagnostics::RecordDecision(srcToRId, dstToRId,
@@ -991,6 +1002,12 @@ void ConWeaveRouting::RouteInput(Ptr<Packet> p, CustomHeader &ch) {
                  */
                 if (tx_md.reply_epoch == txEntry._epoch && tx_md.reply_phase == txEntry._phase) {
                     if (tx_md.reply_flag == ConWeaveReplyTag::INIT) { /* reply of INIT */
+                        NativePathDiagnostics::RecordEvent(
+                            dstToRId, srcToRId, ch,
+                            (now < txEntry._replyTimer && txEntry._replyTimer != CW_MAX_TIME)
+                                ? "init_reply_timely" : "init_reply_late",
+                            txEntry._pathId, txEntry._pathId,
+                            txEntry._replyTimer.GetNanoSeconds(), "reply_deadline");
                         if (now < txEntry._replyTimer &&
                             txEntry._replyTimer != CW_MAX_TIME) { /* if replied timely */
                             txEntry._stabilized = true;           /* stabilized */

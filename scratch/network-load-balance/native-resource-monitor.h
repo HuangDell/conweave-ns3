@@ -27,6 +27,8 @@ class NativeResourceMonitor {
     struct QpState {
         ns3::Ptr<ns3::RdmaQueuePair> qp;
         bool sent = false;
+        bool mechanism_sample = false;
+        uint64_t service_bytes = 0;
         bool complete = false;
     };
     struct PauseState {
@@ -42,6 +44,7 @@ class NativeResourceMonitor {
     static void Pause(NativeResourceMonitor* self, ns3::Ptr<ns3::QbbNetDevice> device,
                       uint32_t pg, bool paused);
     void QpEvent(ns3::Ptr<ns3::RdmaQueuePair> qp, const char* event);
+    void Mechanism(QpState& state, const char* event, uint32_t seq = 0, uint32_t wire = 0);
     void WritePause(const PauseKey& key, const PauseState& state, bool censored);
 
     const ExperimentConfig& config_;
@@ -51,6 +54,8 @@ class NativeResourceMonitor {
     std::map<uint32_t, std::set<int32_t>> serviced_;
     std::map<uint32_t, uint64_t> payload_attempt_bytes_;
     std::map<PauseKey, PauseState> pauses_;
+    FILE* mechanism_ = NULL;
+    std::set<uint32_t> sampled_hosts_;
     FILE* resources_ = NULL;
     FILE* qp_events_ = NULL;
     FILE* pfc_ = NULL;

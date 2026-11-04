@@ -20,6 +20,11 @@ bool NativeResourceMonitor::Open() {
         Close();
         return false;
     }
+    if (config_.monitoring.native_qp_mechanism_log) {
+        mechanism_ = fopen((config_.io.native_resource_output_file + ".qp_mechanism.csv").c_str(), "w");
+        if (!mechanism_) { Close(); return false; }
+        fprintf(mechanism_, "time_ns,event,flow_id,src,dst,sport,dport,seq,wire_bytes,service_payload_bytes,calculated_bps,alpha,cnp_count,last_cnp_ns,snd_nxt,snd_una,pg3_paused\n");
+    }
     fprintf(resources_, "time_ns,node,kind,interface,established_qps,ever_used_qps,"
             "unsent_qps,unfinished_qps,unfinished_peers,serviced_qps_in_window,"
             "payload_attempt_bytes,tx_started_wire_bytes,tx_reserved_busy_ns,"
@@ -54,6 +59,10 @@ void NativeResourceMonitor::Registered(NativeResourceMonitor* self, Ptr<RdmaQueu
     NS_ASSERT_MSG(self->qps_.find(qp->m_flow_id) == self->qps_.end(), "duplicate native flow ID");
     QpState state;
     state.qp = qp;
+    uint32_t src = Settings::ip_to_node_id(qp->sip);
+    uint32_t dst = Settings::ip_to_node_id(qp->dip);
+    if (self->mechanism_ && src / 8 != dst / 8 && self->sampled_hosts_.insert(src).second)
+        state.mechanism_sample = true;
     self->qps_[qp->m_flow_id] = state;
     self->host_qps_[Settings::ip_to_node_id(qp->sip)].push_back(&self->qps_[qp->m_flow_id]);
     self->QpEvent(qp, "create");
@@ -62,6 +71,7 @@ void NativeResourceMonitor::Registered(NativeResourceMonitor* self, Ptr<RdmaQueu
 void NativeResourceMonitor::Completed(NativeResourceMonitor* self, Ptr<RdmaQueuePair> qp) {
     auto found = self->qps_.find(qp->m_flow_id);
     NS_ASSERT_MSG(found != self->qps_.end() && !found->second.complete, "unknown/duplicate native completion");
+    self->Mechanism(found->second, "complete");
     found->second.complete = true;
     self->QpEvent(qp, "complete");
 }
@@ -83,10 +93,24 @@ void NativeResourceMonitor::Tx(NativeResourceMonitor* self, Ptr<QbbNetDevice> de
     uint32_t header = CustomHeader::GetStaticWholeHeaderSize();
     NS_ASSERT_MSG(packet->GetSize() >= header, "invalid native data packet size");
     self->payload_attempt_bytes_[node] += packet->GetSize() - header;
+    found->second.service_bytes += packet->GetSize() - header;
+    self->Mechanism(found->second, "tx", ch.udp.seq, packet->GetSize());
     if (!found->second.sent) {
         found->second.sent = true;
         self->QpEvent(found->second.qp, "first_tx");
     }
+}
+
+void NativeResourceMonitor::Mechanism(QpState& state, const char* event, uint32_t seq, uint32_t wire) {
+    if (!mechanism_ || !state.mechanism_sample) return;
+    Ptr<RdmaQueuePair> q = state.qp;
+    uint32_t src = Settings::ip_to_node_id(q->sip);
+    bool paused = pauses_[PauseKey(src, 1, 3)].paused;
+    fprintf(mechanism_, "%lu,%s,%d,%u,%u,%u,%u,%u,%u,%lu,%lu,%.12g,%lu,%lu,%lu,%lu,%u\n",
+        Simulator::Now().GetNanoSeconds(), event, q->m_flow_id, src,
+        Settings::ip_to_node_id(q->dip), q->sport, q->dport, seq, wire,
+        state.service_bytes, q->m_rate.GetBitRate(), q->mlx.m_alpha,
+        q->m_v5_ecn_cnp_count, q->m_v5_last_ecn_cnp_ns, q->snd_nxt, q->snd_una, paused ? 1 : 0);
 }
 
 void NativeResourceMonitor::Pause(NativeResourceMonitor* self, Ptr<QbbNetDevice> device,
@@ -150,6 +174,8 @@ void NativeResourceMonitor::Sample() {
                     sampled_ ? last_sample_ns_ : now, dev->GetTxElapsedBusyTimeNs());
         }
     }
+    for (auto& entry : qps_)
+        if (!entry.second.complete) Mechanism(entry.second, "sample");
     serviced_.clear();
     last_sample_ns_ = now;
     sampled_ = true;
@@ -162,7 +188,7 @@ void NativeResourceMonitor::Close() {
             if (entry.second.paused) WritePause(entry.first, entry.second, true);
         }
     }
-    for (FILE** file : {&resources_, &qp_events_, &pfc_}) {
+    for (FILE** file : {&resources_, &qp_events_, &pfc_, &mechanism_}) {
         if (*file) {
             fclose(*file);
             *file = NULL;

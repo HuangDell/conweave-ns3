@@ -140,6 +140,7 @@ struct MonitoringConfig {
     uint64_t irn_start_ns = 0;
     uint64_t irn_bucket_ns = 100000;
     uint32_t native_resource_log = 0;
+    uint32_t native_qp_mechanism_log = 0;
     uint32_t monitor_until_complete = 0;
     uint32_t native_diag_log = 0;
     uint64_t native_diag_interval_ns = 10000;

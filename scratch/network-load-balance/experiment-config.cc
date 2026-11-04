@@ -186,6 +186,8 @@ bool LoadExperimentConfig(const std::string& path, ExperimentConfig* config) {
             conf >> config->host_sensing.min_baseline_samples;
             std::cerr << "HOST_SENSING_MIN_BASELINE_SAMPLES\t"
                       << config->host_sensing.min_baseline_samples << "\n";
+        } else if (key == "NATIVE_QP_MECHANISM_LOG") {
+            conf >> config->monitoring.native_qp_mechanism_log;
         } else if (key == "NATIVE_RESOURCE_LOG") {
             conf >> config->monitoring.native_resource_log;
         } else if (key == "MONITOR_UNTIL_COMPLETE") {
