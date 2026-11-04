@@ -19,6 +19,7 @@
 #include "ns3/pointer.h"
 #include "ns3/ppp-header.h"
 #include "ns3/settings.h"
+#include "ns3/conweave-causal-trace.h"
 #include "ns3/switch-node.h"
 #include "ns3/uinteger.h"
 #include "ppp-header.h"
@@ -385,6 +386,7 @@ int RdmaHw::ReceiveUdp(Ptr<Packet> p, CustomHeader &ch) {
     if (rxQp == NULL) {
         uint64_t rxKey = GetRxQpKey(ch.sip, ch.udp.sport, ch.udp.dport, ch.udp.pg);
         if (akashic_RxQp.find(rxKey) != akashic_RxQp.end()) {
+            ConWeaveCausalTrace::Packet("host_late", m_node->GetId(), p, ch);
             // printf("[GetRxQPUDP] Akashic access: %u(%d) -> %u(%d)\n", this->m_node->GetId(),
             // ch.udp.dport, ch.sip, ch.udp.sport);
             return 1;  // just drop
@@ -410,7 +412,12 @@ int RdmaHw::ReceiveUdp(Ptr<Packet> p, CustomHeader &ch) {
     }
 
     bool cnp_check = false;
+    uint32_t causalExpected = rxQp->ReceiverNextExpectedSeq;
     int x = ReceiverCheckSeq(ch.udp.seq, rxQp, payload_size, cnp_check);
+    ConWeaveCausalTrace::Packet("host_rx", m_node->GetId(), p, ch, 0, causalExpected, x);
+    if (x == 2)
+        ConWeaveCausalTrace::Packet("host_nack", m_node->GetId(), p, ch, 0,
+                                    rxQp->ReceiverNextExpectedSeq, cnp_check);
 
     if (x == 1 || x == 2 || x == 6) {  // generate ACK or NACK
         qbbHeader seqh;
@@ -469,6 +476,9 @@ int RdmaHw::ReceiveUdp(Ptr<Packet> p, CustomHeader &ch) {
         AddHeader(newp, 0x800);  // Attach PPP header
 
         // send
+        if (x == 2)
+            ConWeaveCausalTrace::Packet("nack_tx", m_node->GetId(), p, ch, 0,
+                                        rxQp->ReceiverNextExpectedSeq, newp->GetUid());
         uint32_t nic_idx = GetNicIdxOfRxQp(rxQp);
         m_nic[nic_idx].dev->RdmaEnqueueHighPrioQ(newp);
         m_nic[nic_idx].dev->TriggerTransmit();
@@ -642,11 +652,14 @@ int RdmaHw::ReceiveAck(Ptr<Packet> p, CustomHeader &ch) {
             }
         }
 
-    } else if (ch.l3Prot == 0xFD)  // NACK
+    } else if (ch.l3Prot == 0xFD) {  // NACK
+        ConWeaveCausalTrace::Sender("nack_rx", m_node->GetId(), qp, seq, p->GetUid());
         RecoverQueue(qp);
+    }
 
     // handle cnp
     if (cnp) {
+        ConWeaveCausalTrace::Sender("cnp_rx", m_node->GetId(), qp, seq, p->GetUid());
         ++qp->m_v5_ecn_cnp_count;
         qp->m_v5_last_ecn_cnp_ns = Simulator::Now().GetNanoSeconds();
         if (m_cc_mode == 1) {  // mlx version
@@ -817,6 +830,8 @@ uint16_t RdmaHw::EtherToPpp(uint16_t proto) {
 }
 
 void RdmaHw::RecoverQueue(Ptr<RdmaQueuePair> qp) {
+    ConWeaveCausalTrace::Sender("recovery", m_node->GetId(), qp,
+                               qp->snd_una, qp->m_v5_retry_count);
     if (qp->snd_nxt > qp->snd_una) {
         ++qp->m_v5_retry_count;
     }

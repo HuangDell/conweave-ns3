@@ -186,6 +186,10 @@ bool LoadExperimentConfig(const std::string& path, ExperimentConfig* config) {
             conf >> config->host_sensing.min_baseline_samples;
             std::cerr << "HOST_SENSING_MIN_BASELINE_SAMPLES\t"
                       << config->host_sensing.min_baseline_samples << "\n";
+        } else if (key == "CONWEAVE_CAUSAL_TRACE") {
+            conf >> config->monitoring.conweave_causal_trace;
+        } else if (key == "CONWEAVE_CAUSAL_TRACE_OUTPUT_FILE") {
+            conf >> config->io.conweave_causal_trace_output_file;
         } else if (key == "NATIVE_QP_MECHANISM_LOG") {
             conf >> config->monitoring.native_qp_mechanism_log;
         } else if (key == "NATIVE_RESOURCE_LOG") {

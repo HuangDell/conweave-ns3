@@ -32,6 +32,7 @@
 #include "ns3/ipv4-header.h"
 #include "ns3/log.h"
 #include "ns3/native-path-diagnostics.h"
+#include "ns3/conweave-causal-trace.h"
 #include "ns3/nstime.h"
 #include "ns3/object.h"
 #include "ns3/packet.h"
@@ -674,6 +675,8 @@ void ConWeaveRouting::RouteInput(Ptr<Packet> p, CustomHeader &ch) {
                 conweaveDataTag.SetFlagData(ConWeaveDataTag::DATA);
             }
             p->AddPacketTag(conweaveDataTag);
+            ConWeaveCausalTrace::Packet("src_assign", m_switch_id, p, ch, 0,
+                                        txEntry._replyTimer.GetNanoSeconds());
             NativePathDiagnostics::RecordAssignment(p, ch, srcToRId, dstToRId,
                                                     tx_md.currPath);
 
@@ -721,6 +724,8 @@ void ConWeaveRouting::RouteInput(Ptr<Packet> p, CustomHeader &ch) {
                 rx_md.pkt_timestamp_TAIL = conweaveDataTag.GetTimestampTail();
                 rx_md.pkt_flagData = conweaveDataTag.GetFlagData();
                 rx_md.pkt_ecnbits = ch.GetIpv4EcnBits(); /* ECN bits */
+                ConWeaveCausalTrace::Packet("dst_rx", m_switch_id, p, ch, 0,
+                                            rxEntry._epoch, rxEntry._phase);
 
                 /**
                  * ROUND: check epoch: 2(prev), 0(current), or 1(new)
@@ -736,6 +741,8 @@ void ConWeaveRouting::RouteInput(Ptr<Packet> p, CustomHeader &ch) {
 
                 /** FILTER: if previous epoch, just pass to destination */
                 if (rx_md.resultEpochMatch == 2) { /* prev epoch */
+                    ConWeaveCausalTrace::Packet("dst_old_epoch", m_switch_id, p, ch, 0,
+                                                rxEntry._epoch, rxEntry._phase);
                     DoSwitchSendToDev(p, ch);      /* immediately send to dst */
                     return;
                 }
@@ -902,6 +909,12 @@ void ConWeaveRouting::RouteInput(Ptr<Packet> p, CustomHeader &ch) {
                                 : 0;
                         voq->second.RescheduleFlush(
                             NanoSeconds(rx_md.timeExpectedToFlush)); /* new deadline */
+                        ConWeaveCausalTrace::UpdateVoq(
+                            voq->second.m_traceId,
+                            now.GetNanoSeconds() + rx_md.timeExpectedToFlush,
+                            rx_md.phase0TxTime.GetNanoSeconds(), rx_md.phase0RxTime.GetNanoSeconds(),
+                            rx_md.pkt_flagData == ConWeaveDataTag::TAIL ? "tail" : "old_data",
+                            voq->second.getQueueSize(), rx_md.pkt_epoch);
                         SLB_LOG(PARSE_FIVE_TUPLE(ch)
                                 << "--> Phase 0 while OoO"
                                 << ",VOQ size:" << voq->second.getQueueSize() + 1
@@ -933,6 +946,12 @@ void ConWeaveRouting::RouteInput(Ptr<Packet> p, CustomHeader &ch) {
                             voq.Set(rx_md.pkt_flowkey, ch.dip,
                                     NanoSeconds(rx_md.timeExpectedToFlush),
                                     m_extraVOQFlushTime); /* new deadline */
+                            voq.m_traceId = ConWeaveCausalTrace::CreateVoq(
+                                m_switch_id, p, ch,
+                                now.GetNanoSeconds() + rx_md.timeExpectedToFlush,
+                                rx_md.phase0TxTime.GetNanoSeconds(), rx_md.phase0RxTime.GetNanoSeconds(),
+                                rx_md.flagPhase0Cache ? "cached_prediction" : "default_wait");
+                            voq.m_traceNode = m_switch_id;
                             voq.m_deleteCallback = MakeCallback(&ConWeaveRouting::DeleteVOQ, this);
                             voq.m_CallbackByVOQFlush =
                                 MakeCallback(&ConWeaveRouting::CallbackByVOQFlush, this);

@@ -31,6 +31,7 @@
 #include "ns3/boolean.h"
 #include "ns3/cn-header.h"
 #include "ns3/custom-header.h"
+#include "ns3/conweave-causal-trace.h"
 #include "ns3/data-rate.h"
 #include "ns3/double.h"
 #include "ns3/drop-tail-queue.h"
@@ -353,6 +354,7 @@ void QbbNetDevice::Resume(unsigned qIndex) {
 void QbbNetDevice::Receive(Ptr<Packet> packet) {
     NS_LOG_FUNCTION(this << packet);
     if (!m_linkUp) {
+        ConWeaveCausalTrace::Drop(m_node->GetId(), packet, "link_down");
         m_traceDrop(packet, 0);
         return;
     }
@@ -362,6 +364,7 @@ void QbbNetDevice::Receive(Ptr<Packet> packet) {
         // If we have an error model and it indicates that it is time to lose a
         // corrupted packet, don't forward this packet up, let it go.
         //
+        ConWeaveCausalTrace::Drop(m_node->GetId(), packet, "receive_error");
         m_phyRxDropTrace(packet);
         return;
     }
@@ -463,6 +466,8 @@ bool QbbNetDevice::TransmitStart(Ptr<Packet> p) {
     m_txMachineState = BUSY;
     m_currentPkt = p;
     m_phyTxBeginTrace(m_currentPkt);
+    if (ConWeaveCausalTrace::Enabled() && m_node->GetNodeType() != 0)
+        ConWeaveCausalTrace::Wire(m_node->GetId(), p);
     Time txTime = Seconds(m_bps.CalculateTxTime(p->GetSize()));
     // v4 residual-capacity estimator: txTime uses the (possibly degraded) m_bps, so
     // departedBytes*8 / busyTimeNs recovers the effective serialization rate c_eff.
@@ -475,6 +480,7 @@ bool QbbNetDevice::TransmitStart(Ptr<Packet> p) {
 
     bool result = m_channel->TransmitStart(p, this, txTime);
     if (result == false) {
+        ConWeaveCausalTrace::Drop(m_node->GetId(), p, "channel_tx_failure");
         m_phyTxDropTrace(p);
     }
     return result;

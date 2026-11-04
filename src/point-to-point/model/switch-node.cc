@@ -10,6 +10,7 @@
 #include "ns3/ipv4.h"
 #include "ns3/letflow-routing.h"
 #include "ns3/native-path-diagnostics.h"
+#include "ns3/conweave-causal-trace.h"
 #include "ns3/packet.h"
 #include "ns3/pause-header.h"
 #include "ns3/settings.h"
@@ -342,6 +343,7 @@ void SwitchNode::DoSwitchSend(Ptr<Packet> p, CustomHeader &ch, uint32_t outDev, 
                 //           << ",At " << Simulator::Now() << std::endl;
 #endif
                 Settings::dropped_pkt_sw_ingress++;
+                ConWeaveCausalTrace::Packet("drop", GetId(), p, ch, 0, 0, 0, "switch_ingress");
                 NativePathDiagnostics::ForgetPacket(p);
                 return;  // drop
             }
@@ -353,6 +355,7 @@ void SwitchNode::DoSwitchSend(Ptr<Packet> p, CustomHeader &ch, uint32_t outDev, 
             //           << Simulator::Now() << std::endl;
 #endif
             Settings::dropped_pkt_sw_egress++;
+            ConWeaveCausalTrace::Packet("drop", GetId(), p, ch, 0, 0, 0, "switch_egress");
             NativePathDiagnostics::ForgetPacket(p);
             return;  // drop
         }

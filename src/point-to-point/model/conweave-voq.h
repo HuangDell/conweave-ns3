@@ -65,6 +65,8 @@ class ConWeaveVOQ {
     static std::vector<int> m_flushEstErrorhistory;
 
    private:
+    uint64_t m_traceId = 0;  // observer identity only; no protocol use
+    uint32_t m_traceNode = 0;
     uint64_t m_flowkey;               // flowkey (voqMap's key)
     uint32_t m_dip;                   // destination ip (for monitoring)
     std::queue<Ptr<Packet> > m_FIFO;  // per-flow FIFO queue

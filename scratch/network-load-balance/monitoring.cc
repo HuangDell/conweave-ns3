@@ -6,6 +6,7 @@
 #include <ns3/capacity-proportional-routing.h>
 #include <ns3/conga-routing.h>
 #include <ns3/conweave-voq.h>
+#include <ns3/conweave-causal-trace.h>
 #include <ns3/custom-header.h>
 #include <ns3/int-header.h>
 #include <ns3/letflow-routing.h>
@@ -73,6 +74,9 @@ bool SimulationMonitor::OpenCoreOutputs() {
     if (config_.cc.mode == 1) {
         cnp_output_ = fopen(config_.io.cnp_output_file.c_str(), "w");
     }
+    bool causal_trace_open = !config_.monitoring.conweave_causal_trace ||
+        (config_.lb.mode == LbMode::kConweave &&
+         ConWeaveCausalTrace::Open(config_.io.conweave_causal_trace_output_file));
     bool native_diag_open = true;
     if (config_.monitoring.native_diag_log) {
         native_diag_open = NativePathDiagnostics::Open(
@@ -103,7 +107,7 @@ bool SimulationMonitor::OpenCoreOutputs() {
         }
     }
     bool native_resources_open = !native_resources_ || native_resources_->Open();
-    return native_resources_open && pfc_output_ && fct_output_ && flow_input_output_ && native_diag_open &&
+    return causal_trace_open && native_resources_open && pfc_output_ && fct_output_ && flow_input_output_ && native_diag_open &&
            (config_.cc.mode != 1 || cnp_output_) &&
            (!config_.traffic.v5_qp_pool || !config_.traffic.v5_wqe_log || v5_wqe_output_) &&
            (!config_.traffic.v5_qp_pool || !config_.traffic.v5_qp_state_log ||
@@ -177,6 +181,7 @@ void SimulationMonitor::CloseOutputs() {
         RdmaHw::s_oooEventLog = NULL;
     }
     NativePathDiagnostics::Close();
+    ConWeaveCausalTrace::Close();
     if (host_path_sensing_) {
         host_path_sensing_->CloseOutputs();
     }

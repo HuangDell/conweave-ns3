@@ -22,6 +22,7 @@
 
 #include "ns3/assert.h"
 #include "ns3/conweave-routing.h"
+#include "ns3/conweave-causal-trace.h"
 #include "ns3/ipv4-header.h"
 #include "ns3/log.h"
 #include "ns3/settings.h"
@@ -43,9 +44,17 @@ void ConWeaveVOQ::Set(uint64_t flowkey, uint32_t dip, Time timeToFlush, Time ext
     RescheduleFlush(timeToFlush);
 }
 
-void ConWeaveVOQ::Enqueue(Ptr<Packet> pkt) { m_FIFO.push(pkt); }
+void ConWeaveVOQ::Enqueue(Ptr<Packet> pkt) {
+    m_FIFO.push(pkt);
+    if (ConWeaveCausalTrace::Enabled()) {
+        CustomHeader ch(CustomHeader::L2_Header | CustomHeader::L3_Header | CustomHeader::L4_Header);
+        pkt->PeekHeader(ch);
+        ConWeaveCausalTrace::Packet("voq_enqueue", m_traceNode, pkt, ch, m_traceId);
+    }
+}
 
 void ConWeaveVOQ::FlushAllImmediately() {
+    ConWeaveCausalTrace::Voq("voq_flush", m_traceId, m_FIFO.size());
     m_CallbackByVOQFlush(
         m_flowkey,
         (uint32_t)m_FIFO.size()); /** IMPORTANT: set RxEntry._reordering = false at flushing */
@@ -54,9 +63,12 @@ void ConWeaveVOQ::FlushAllImmediately() {
         CustomHeader ch(CustomHeader::L2_Header | CustomHeader::L3_Header |
                         CustomHeader::L4_Header);
         pkt->PeekHeader(ch);
+        ConWeaveCausalTrace::Packet("voq_release", m_traceNode, pkt, ch, m_traceId);
         m_switchSendToDevCallback(pkt, ch);  // SlbRouting::DoSwitchSendToDev
         m_FIFO.pop();                        // remove this element
     }
+    ConWeaveCausalTrace::Voq("voq_end", m_traceId, 0);
+    ConWeaveCausalTrace::DeleteVoq(m_traceId);
     m_deleteCallback(m_flowkey);  // delete this from SlbRouting::m_voqMap
 }
 
