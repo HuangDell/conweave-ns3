@@ -25,9 +25,9 @@ uint32_t IntHeader::GetStaticSize(){
 void IntHeader::PushHop(uint64_t time, uint64_t bytes, uint32_t qlen, uint64_t rate){
 	// only do this in INT mode
 	if (mode == 0){
-		uint32_t idx = nhop % maxHop;
+		uint32_t idx = GetHopCount() % maxHop;
 		hop[idx].Set(time, bytes, qlen, rate);
-		nhop++;
+		nhop = (nhop & tboMask) | (GetHopCount() + 1);
 	}
 }
 

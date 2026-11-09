@@ -41,6 +41,14 @@ TypeId RdmaHw::GetTypeId(void) {
                           MakeDataRateAccessor(&RdmaHw::m_minRate), MakeDataRateChecker())
             .AddAttribute("Mtu", "Mtu.", UintegerValue(1000), MakeUintegerAccessor(&RdmaHw::m_mtu),
                           MakeUintegerChecker<uint32_t>())
+            .AddAttribute("OdinEta", "Odin target utilization", DoubleValue(0.95),
+                          MakeDoubleAccessor(&RdmaHw::m_odinEta), MakeDoubleChecker<double>(0, 1))
+            .AddAttribute("OdinGamma", "Odin NIC EWMA gain", DoubleValue(0.1),
+                          MakeDoubleAccessor(&RdmaHw::m_odinGamma), MakeDoubleChecker<double>(0, 1))
+            .AddAttribute("OdinBeta", "Odin additive increment", DataRateValue(DataRate("5Mb/s")),
+                          MakeDataRateAccessor(&RdmaHw::m_odinBeta), MakeDataRateChecker())
+            .AddTraceSource("OdinControl", "Synchronous Odin control/lifecycle audit",
+                            MakeTraceSourceAccessor(&RdmaHw::m_traceOdin))
             .AddAttribute("CcMode", "which mode of DCQCN is running", UintegerValue(0),
                           MakeUintegerAccessor(&RdmaHw::m_cc_mode), MakeUintegerChecker<uint32_t>())
             .AddAttribute("NACKGenerationInterval", "The NACK/CNP Generation interval",
@@ -236,6 +244,17 @@ void RdmaHw::RegisterQueuePair(Ptr<RdmaQueuePair> qp, bool notify_nic) {
         qp->tmly.m_curRate = m_bps;
     }
 
+    if (m_cc_mode == CC_MODE_ODIN) {
+        NS_ABORT_MSG_IF(qp->m_persistent || !qp->m_win || !qp->m_baseRtt ||
+                        !m_var_win || !m_rateBound, "Odin requires ordinary QPs, window and pacing");
+        qp->lastPktSize = 0;
+        qp->odin.nic = nic_idx;
+        qp->odin.active = true;
+        m_nic[nic_idx].odin.Register(key, m_bps.GetBitRate(), m_bps.GetBitRate());
+        OdinEvent event;
+        event.event = "create";
+        TraceOdin(qp, event);
+    }
     m_traceQpRegistered(qp);
     if (notify_nic) {
         m_nic[nic_idx].dev->NewQp(qp);
@@ -667,7 +686,9 @@ int RdmaHw::ReceiveAck(Ptr<Packet> p, CustomHeader &ch) {
         }
     }
 
-    if (m_cc_mode == 3) {
+    if (m_cc_mode == CC_MODE_ODIN) {
+        if (qp->odin.active) HandleAckOdin(qp, ch);
+    } else if (m_cc_mode == 3) {
         HandleAckHp(qp, p, ch);
     } else if (m_cc_mode == 7) {
         HandleAckTimely(qp, p, ch);
@@ -855,6 +876,13 @@ void RdmaHw::CompletePersistentWqes(Ptr<RdmaQueuePair> qp) {
 }
 
 void RdmaHw::QpComplete(Ptr<RdmaQueuePair> qp) {
+    if (m_cc_mode == CC_MODE_ODIN && qp->odin.active) {
+        m_nic[qp->odin.nic].odin.Remove(GetQpKey(qp->dip.Get(), qp->sport, qp->dport, qp->m_pg));
+        qp->odin.active = false;
+        OdinEvent event;
+        event.event = "complete";
+        TraceOdin(qp, event);
+    }
     NS_ASSERT(!m_qpCompleteCallback.IsNull());
     if (m_cc_mode == 1) {
         Simulator::Cancel(qp->mlx.m_eventUpdateAlpha);
@@ -992,8 +1020,16 @@ Ptr<Packet> RdmaHw::GetNxtPacket(Ptr<RdmaQueuePair> qp) {
 }
 
 void RdmaHw::PktSent(Ptr<RdmaQueuePair> qp, Ptr<Packet> pkt, Time interframeGap) {
+    int64_t odin_previous_avail = qp->m_nextAvail.GetNanoSeconds();
     qp->lastPktSize = pkt->GetSize();
     UpdateNextAvail(qp, interframeGap, pkt->GetSize());
+    if (m_cc_mode == CC_MODE_ODIN) {
+        OdinEvent event;
+        event.event = "tx";
+        event.next_before_ns = odin_previous_avail;
+        event.next_after_ns = qp->m_nextAvail.GetNanoSeconds();
+        TraceOdin(qp, event);
+    }
 
     if (pkt) {
         CustomHeader ch(CustomHeader::L2_Header | CustomHeader::L3_Header |

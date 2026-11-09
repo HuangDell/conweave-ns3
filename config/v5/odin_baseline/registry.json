@@ -1,0 +1,56 @@
+{
+  "version": "odin-v1",
+  "seed": 1,
+  "topology_sha256": "98b254ee941de2bc1c5a0cf2bb3898a4e3bf8d229650e06d64b01cd224808052",
+  "generator_sha256": "e5b0dab9b5d108bdc33757114024b67aa9e1ed4a808f1d22f1a2e3a9c572c0f9",
+  "workloads": {
+    "single": {
+      "flow_count": 1,
+      "bytes": 10485760,
+      "flow": {
+        "filename": "single.flow.txt",
+        "sha256": "210cdba3529031f9791c34053f8045238963539f945a31bb7c0a516aa6838f64"
+      },
+      "job": {
+        "filename": "single.job.txt",
+        "sha256": "a77621a18fada860e6ec8730c77273995121c95561c5f66479dea4dd326346ae"
+      }
+    },
+    "dual-k1": {
+      "flow_count": 2,
+      "bytes": 20971520,
+      "flow": {
+        "filename": "dual-k1.flow.txt",
+        "sha256": "44a8e3565d03b9598f027a50cc4f547d2fa0684eed15847c2f6096fe59bd0c29"
+      },
+      "job": {
+        "filename": "dual-k1.job.txt",
+        "sha256": "a2a92151da2d1529fc8bd7c1794d50c12bfcde123058a8a1d5ecf1062d9bc9c2"
+      }
+    },
+    "dual-k40": {
+      "flow_count": 80,
+      "bytes": 20971520,
+      "flow": {
+        "filename": "dual-k40.flow.txt",
+        "sha256": "012fe528df2f30c7e80b103c41899ac1e07a533c969aa783e8453197732326e1"
+      },
+      "job": {
+        "filename": "dual-k40.job.txt",
+        "sha256": "aa8c1550fe816c9a1ee82eb82eeb33ae96ea285332645d20d8c3ead81d1dac59"
+      }
+    },
+    "contended-k40": {
+      "flow_count": 120,
+      "bytes": 31457280,
+      "flow": {
+        "filename": "contended-k40.flow.txt",
+        "sha256": "97a86e9042bc0e2f79393c498fde48cbed507d865d3b66fc5a56ca2ce5eee4c7"
+      },
+      "job": {
+        "filename": "contended-k40.job.txt",
+        "sha256": "28951da04fbbade97d2676ae31c1d41a38e8fdfe6866ccc92d1a2e335fb5a6f4"
+      }
+    }
+  }
+}

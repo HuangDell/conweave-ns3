@@ -68,6 +68,15 @@ SimulationMonitor::SimulationMonitor(const ExperimentConfig& config, SimulationS
 SimulationMonitor::~SimulationMonitor() { CloseOutputs(); }
 
 bool SimulationMonitor::OpenCoreOutputs() {
+    if (config_.monitoring.odin_log) {
+        odin_output_ = fopen(config_.io.odin_output_file.c_str(), "w");
+        if (!odin_output_) return false;
+        fprintf(odin_output_, "time_ns,event,reason,flow_id,src,dst,nic,active,capacity_bps,ack_seq,"
+                "psi,tbo,beta_bps,temporary_bps,branch,old_rate_bps,rate_bps,sum_before_bps,"
+                "sum_after_bps,u_before,u_after,base_rtt_ns,window_bytes,next_before_ns,"
+                "next_after_ns,last_packet_bytes,inflight_bytes,sample_hop,sample_queue_bytes,"
+                "sample_dt_ns,sample_delta_bytes,sample_line_bps\n");
+    }
     pfc_output_ = fopen(config_.io.pfc_output_file.c_str(), "w");
     fct_output_ = fopen(config_.io.fct_output_file.c_str(), "w");
     flow_input_output_ = fopen(config_.io.flow_input_file.c_str(), "w");
@@ -185,6 +194,7 @@ void SimulationMonitor::CloseOutputs() {
     if (host_path_sensing_) {
         host_path_sensing_->CloseOutputs();
     }
+    CloseFile(&odin_output_);
     CloseFile(&pfc_output_);
     CloseFile(&fct_output_);
     CloseFile(&flow_input_output_);
@@ -298,6 +308,8 @@ void SimulationMonitor::ConnectPfcTrace(Ptr<QbbNetDevice> device) {
 }
 
 void SimulationMonitor::ConnectQpComplete(Ptr<RdmaDriver> driver) {
+    if (odin_output_) driver->m_rdma->TraceConnectWithoutContext(
+        "OdinControl", MakeBoundCallback(&SimulationMonitor::OdinTrace, this));
     if (native_resources_) native_resources_->ConnectDriver(driver);
     driver->TraceConnectWithoutContext(
         "QpComplete", MakeBoundCallback(&SimulationMonitor::QpCompleteCallback, this));
@@ -306,6 +318,22 @@ void SimulationMonitor::ConnectQpComplete(Ptr<RdmaDriver> driver) {
         MakeBoundCallback(&SimulationMonitor::PersistentQpEventCallback, this));
     driver->TraceConnectWithoutContext(
         "WqeEvent", MakeBoundCallback(&SimulationMonitor::WqeEventCallback, this));
+}
+
+void SimulationMonitor::OdinTrace(SimulationMonitor* self, Ptr<RdmaQueuePair> qp,
+                                   const OdinEvent& e) {
+    const auto& r = e.control;
+    fprintf(self->odin_output_,
+            "%lu,%s,%s,%d,%u,%u,%u,%u,%lu,%u,%.17g,%u,%.17g,%.17g,%s,%lu,%lu,"
+            "%lu,%lu,%.17g,%.17g,%lu,%lu,%ld,%ld,%u,%lu,%u,%u,%lu,%lu,%lu\n",
+            Simulator::Now().GetNanoSeconds(), e.event, e.reason, qp->m_flow_id,
+            Settings::ip_to_node_id(qp->sip), Settings::ip_to_node_id(qp->dip),
+            e.nic, e.active, e.capacity, e.ack_seq, r.psi, r.tbo ? 1 : 0, r.beta,
+            r.temporary, r.branch, r.old_rate, r.rate, r.sum_before, r.sum_after,
+            r.u_before, r.u_after, e.base_rtt_ns, e.window,
+            e.next_before_ns, e.next_after_ns, e.last_packet_bytes, e.inflight_bytes,
+            e.sample_hop, e.sample_queue_bytes, e.sample_dt_ns,
+            e.sample_delta_bytes, e.sample_line_bps);
 }
 
 void SimulationMonitor::StartCnpMonitoring(Ptr<RdmaHw> hardware) {

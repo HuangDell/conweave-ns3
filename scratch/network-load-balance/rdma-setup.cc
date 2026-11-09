@@ -42,10 +42,24 @@ bool ConfigureSimulationDefaults(const ExperimentConfig& config) {
         return false;
     }
 
+    if (config.cc.mode == CC_MODE_ODIN) {
+        if (config.traffic.v5_qp_pool || config.traffic.v5_nsub != 1 ||
+            config.traffic.v5_chunk_bytes || config.traffic.v5_estimator_enable ||
+            config.host_sensing.enable || config.lb.mode != LbMode::kEcmp ||
+            config.cc.enable_irn || !config.cc.enable_pfc || !config.cc.has_win ||
+            !config.cc.var_win || !config.cc.rate_bound || config.cc.global_t != 0 ||
+            !(config.cc.odin_eta > 0 && config.cc.odin_eta <= 1) ||
+            !(config.cc.odin_gamma > 0 && config.cc.odin_gamma <= 1) ||
+            !(config.cc.odin_beta_mbps >= 0 && config.cc.odin_beta_mbps <= 1e6) ||
+            !(config.cc.odin_tbo_ratio >= 0 && config.cc.odin_tbo_ratio <= 1)) {
+            std::cerr << "Invalid Odin configuration: ordinary ECMP QPs, PFC, window and pacing required\n";
+            return false;
+        }
+    }
     IntHop::multi = config.cc.int_multi;
     if (config.cc.mode == 7) {
         IntHeader::mode = 1;
-    } else if (config.cc.mode == 3) {
+    } else if (config.cc.mode == 3 || config.cc.mode == CC_MODE_ODIN) {
         IntHeader::mode = 0;
     } else {
         IntHeader::mode = 5;
@@ -73,6 +87,10 @@ void InstallRdmaHosts(const ExperimentConfig& config, SimulationState& state, ui
         hardware->SetAttribute("L2ChunkSize", UintegerValue(config.cc.l2_chunk_size));
         hardware->SetAttribute("L2AckInterval", UintegerValue(config.cc.l2_ack_interval));
         hardware->SetAttribute("CcMode", UintegerValue(config.cc.mode));
+        hardware->SetAttribute("OdinEta", DoubleValue(config.cc.odin_eta));
+        hardware->SetAttribute("OdinGamma", DoubleValue(config.cc.odin_gamma));
+        hardware->SetAttribute("OdinBeta", DataRateValue(DataRate(
+            static_cast<uint64_t>(config.cc.odin_beta_mbps * 1e6))));
         hardware->SetAttribute("RateDecreaseInterval",
                                DoubleValue(config.cc.rate_decrease_interval));
         hardware->SetAttribute("MinRate", DataRateValue(DataRate(config.cc.min_rate)));
@@ -112,6 +130,7 @@ void ConfigureSwitchTransport(const ExperimentConfig& config, SimulationState& s
         if (state.nodes.Get(i)->GetNodeType() == 1) {
             Ptr<SwitchNode> switch_node = DynamicCast<SwitchNode>(state.nodes.Get(i));
             switch_node->SetAttribute("CcMode", UintegerValue(config.cc.mode));
+            switch_node->SetAttribute("OdinTboRatio", DoubleValue(config.cc.odin_tbo_ratio));
             switch_node->SetAttribute("AckHighPrio", UintegerValue(1));
         }
     }

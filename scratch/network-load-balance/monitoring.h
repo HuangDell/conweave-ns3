@@ -76,6 +76,9 @@ class SimulationMonitor {
     std::unique_ptr<class HostPathSensing> host_path_sensing_;
     std::unique_ptr<class NativeResourceMonitor> native_resources_;
 
+    FILE* odin_output_ = NULL;
+    static void OdinTrace(SimulationMonitor* monitor, ns3::Ptr<ns3::RdmaQueuePair> qp,
+                          const ns3::OdinEvent& event);
     FILE* pfc_output_ = NULL;
     FILE* fct_output_ = NULL;
     FILE* flow_input_output_ = NULL;

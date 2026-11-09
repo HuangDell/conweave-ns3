@@ -61,6 +61,7 @@ class SwitchNode : public Node {
 
    public:
     // Ptr<BroadcomNode> m_broadcom;
+    double m_odinTboRatio;
     Ptr<SwitchMmu> m_mmu;
     bool m_isToR;                                 // true if ToR switch
     std::unordered_set<uint32_t> m_isToR_hostIP;  // host's IP connected to this ToR

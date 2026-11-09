@@ -174,6 +174,7 @@ cc_modes = {
     "hpcc": 3,
     "timely": 7,
     "dctcp": 8,
+    "odin": 9,
 }
 
 lb_modes = {
@@ -389,16 +390,34 @@ def parse_completion_counts(output_log, fct_output):
     }
 
 
+def validate_odin_options(args):
+    """Reject unsupported Odin combinations before allocating outputs or inputs."""
+    if args.cc != 'odin':
+        if args.odin_log:
+            raise ValueError('--odin-log requires --cc odin')
+        return
+    for name in ('odin_eta', 'odin_gamma'):
+        value = getattr(args, name)
+        if not math.isfinite(value) or not 0 < value <= 1:
+            raise ValueError(name + ' must be in (0, 1]')
+    if not math.isfinite(args.odin_beta_mbps) or not 0 <= args.odin_beta_mbps <= 1e6:
+        raise ValueError('odin_beta_mbps must be finite and in [0, 1000000]')
+    if not math.isfinite(args.odin_tbo_ratio) or not 0 <= args.odin_tbo_ratio <= 1:
+        raise ValueError('odin_tbo_ratio must be in [0, 1]')
+    if (args.lb != 'fecmp' or args.v5_qp_pool or args.v5_nsub != 1 or
+            args.v5_chunk_bytes or args.v5_estimator_enable or args.host_sensing_enable or
+            args.irn or args.pfc != 1 or args.degrade_link):
+        raise ValueError('Odin v1 requires ordinary fixed-path ECMP QPs, PFC=1, IRN=0, '
+                         'no pool/chunk/estimator/host sensing/link degradation')
+
+
 def main():
     # make directory if not exists
     output_root = os.path.join(os.getcwd(), "mix", "output")
-    if not os.path.exists(output_root):
-        os.makedirs(output_root, exist_ok=True)
-        print("The new directory is created - {}".format(output_root))
 
     parser = argparse.ArgumentParser(description='run simulation')
     parser.add_argument('--cc', dest='cc', action='store',
-                        default='dcqcn', help="hpcc/dcqcn/timely/dctcp (default: dcqcn)")
+                        default='dcqcn', help="odin/hpcc/dcqcn/timely/dctcp (default: dcqcn)")
     parser.add_argument('--lb', dest='lb', action='store',
                         default='fecmp', help="fecmp/pecmp/drill/conga (default: fecmp)")
     parser.add_argument('--pfc', dest='pfc', action='store',
@@ -564,7 +583,17 @@ def main():
     # parser.add_argument('--cwh_tx_expiry_time', dest='cwh_tx_expiry_time', action='store',
     #                     type=int, default=1000, help="timeout value of ConWeave Tx for CLEAR signal (default: 1000us)")
 
+    parser.add_argument('--odin-eta', type=float, default=0.95)
+    parser.add_argument('--odin-gamma', type=float, default=0.1)
+    parser.add_argument('--odin-beta-mbps', type=float, default=5.0)
+    parser.add_argument('--odin-tbo-ratio', type=float, default=1.0 / 16)
+    parser.add_argument('--odin-log', type=int, choices=(0, 1), default=0)
+    parser.add_argument('--prepare-only', action='store_true',
+                        help='Write config and manifest, without starting NS-3')
     args = parser.parse_args()
+    validate_odin_options(args)
+    if not os.path.exists(output_root):
+        os.makedirs(output_root, exist_ok=True)
     if args.job_file and not args.flow_file:
         raise ValueError("--job-file requires explicit --flow-file")
 
@@ -878,7 +907,7 @@ def main():
     # By default, DCQCN uses no window (rate-based).
     has_win = 0
     var_win = 0
-    if (cc_mode == 3 or cc_mode == 8 or enforce_win == 1):  # HPCC or DCTCP or enforcement
+    if (cc_mode in (3, 8, 9) or enforce_win == 1):  # HPCC or DCTCP or enforcement
         has_win = 1
         var_win = 1
         if enforce_win == 1:
@@ -927,7 +956,7 @@ def main():
     qlen_mon_start = flowgen_start_time
     qlen_mon_end = flowgen_stop_time
 
-    if (cc_mode == 1):  # DCQCN
+    if cc_mode in (1, 9):  # Existing DCQCN template plus explicit Odin configuration
         ai = 10 * bw / 25
         hai = 25 * bw / 25
         dctcp_ai = 1000
@@ -1004,7 +1033,14 @@ def main():
                                         native_diag_interval_ns=args.native_diag_interval_ns,
                                         random_seed=args.seed)
     else:
-        print("unknown cc:{}".format(args.cc))
+        raise ValueError("Configuration generation is not implemented for cc:{}".format(args.cc))
+
+    if args.cc == 'odin':
+        config = config.replace('GLOBAL_T 1\n', 'GLOBAL_T 0\n')
+        config += (f"ODIN_ETA {args.odin_eta}\nODIN_GAMMA {args.odin_gamma}\n"
+                   f"ODIN_BETA_MBPS {args.odin_beta_mbps}\n"
+                   f"ODIN_TBO_RATIO {args.odin_tbo_ratio}\nODIN_LOG {args.odin_log}\n"
+                   f"ODIN_OUTPUT_FILE mix/output/{config_ID}/{config_ID}_out_odin.csv\n")
 
     with open(config_name, "w") as file:
         file.write(config)
@@ -1097,7 +1133,16 @@ def main():
             ] if args.degrade_link else [],
         },
     }
+    if args.cc == 'odin':
+        manifest['config']['odin'] = dict(
+            implementation='odin-paper-ns3-v1', eta=args.odin_eta, gamma=args.odin_gamma,
+            beta_mbps=args.odin_beta_mbps, tbo_ratio=args.odin_tbo_ratio, log=args.odin_log,
+            initial_u=1, initial_rate='nic_line_rate', active_until='final_ack',
+            sample='current_queue_max_hop_no_extra_ewma', global_t=0)
     write_json(manifest_path, manifest)
+    if args.prepare_only:
+        print('Prepared configuration only: ' + config_name)
+        return
 
     # run program
     print("Running simulation...")

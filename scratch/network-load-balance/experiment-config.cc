@@ -14,7 +14,19 @@ bool LoadExperimentConfig(const std::string& path, ExperimentConfig* config) {
 
     std::string key;
     while (conf >> key) {
-        if (key == "FLOW_INPUT_FILE") {
+        if (key == "ODIN_ETA") {
+            conf >> config->cc.odin_eta;
+        } else if (key == "ODIN_GAMMA") {
+            conf >> config->cc.odin_gamma;
+        } else if (key == "ODIN_BETA_MBPS") {
+            conf >> config->cc.odin_beta_mbps;
+        } else if (key == "ODIN_TBO_RATIO") {
+            conf >> config->cc.odin_tbo_ratio;
+        } else if (key == "ODIN_LOG") {
+            conf >> config->monitoring.odin_log;
+        } else if (key == "ODIN_OUTPUT_FILE") {
+            conf >> config->io.odin_output_file;
+        } else if (key == "FLOW_INPUT_FILE") {
             conf >> config->io.flow_input_file;
             std::cerr << "FLOW_INPUT_FILE\t\t\t" << config->io.flow_input_file << "\n";
         } else if (key == "CNP_OUTPUT_FILE") {

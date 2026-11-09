@@ -30,6 +30,7 @@ enum CcMode {
     CC_MODE_HPCC = 3,
     CC_MODE_TIMELY = 7,
     CC_MODE_DCTCP = 8,
+    CC_MODE_ODIN = 9,
     CC_MODE_UNDEFINED = 0,
 };
 
@@ -78,6 +79,12 @@ class RdmaQueuePair : public Object {
     uint32_t m_win;       // bound of on-the-fly packets
     uint64_t m_baseRtt;   // base RTT of this qp
     DataRate m_max_rate;  // max rate
+    struct OdinState {
+        bool sampled = false, active = false;
+        uint32_t nic = 0;
+        uint64_t received_ns = 0;
+        IntHeader previous;
+    } odin;
     bool m_var_win;       // variable window size
     Time m_nextAvail;     //< Soonest time of next send
     uint32_t wp;          // current window of packets

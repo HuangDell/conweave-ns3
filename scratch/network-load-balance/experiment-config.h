@@ -95,6 +95,8 @@ struct HostSensingConfig {
 
 struct CongestionControlConfig {
     uint32_t mode = 1;
+    double odin_eta = 0.95, odin_gamma = 0.1, odin_beta_mbps = 5;
+    double odin_tbo_ratio = 1.0 / 16;
     bool enable_qcn = true;
     bool enable_pfc = true;
     bool use_dynamic_pfc_threshold = true;
@@ -139,6 +141,7 @@ struct MonitoringConfig {
     uint64_t cnp_bucket_ns = 100000;
     uint64_t irn_start_ns = 0;
     uint64_t irn_bucket_ns = 100000;
+    uint32_t odin_log = 0;
     uint32_t native_resource_log = 0;
     uint32_t native_qp_mechanism_log = 0;
     uint32_t conweave_causal_trace = 0;
@@ -151,6 +154,7 @@ struct IoConfig {
     std::string topology_file;
     std::string flow_file;
     std::string flow_input_file = "flow.txt";
+    std::string odin_output_file = "odin.csv";
     std::string fct_output_file = "fct.txt";
     std::string pfc_output_file = "pfc.txt";
     std::string cnp_output_file = "cnp.txt";

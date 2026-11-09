@@ -95,6 +95,10 @@ public:
 		uint64_t ts;
 	};
 
+	static const uint16_t tboMask = 0x8000;
+	uint16_t GetHopCount() const { return nhop & ~tboMask; }
+	bool HasTbo() const { return (nhop & tboMask) != 0; }
+	void MarkTbo() { nhop |= tboMask; }
 	IntHeader();
 	static uint32_t GetStaticSize();
 	void PushHop(uint64_t time, uint64_t bytes, uint32_t qlen, uint64_t rate);

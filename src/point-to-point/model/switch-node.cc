@@ -27,6 +27,9 @@ TypeId SwitchNode::GetTypeId(void) {
             .AddConstructor<SwitchNode>()
             .AddAttribute("EcnEnabled", "Enable ECN marking.", BooleanValue(false),
                           MakeBooleanAccessor(&SwitchNode::m_ecnEnabled), MakeBooleanChecker())
+            .AddAttribute("OdinTboRatio", "Odin switch-total buffer mark threshold",
+                          DoubleValue(1.0 / 16), MakeDoubleAccessor(&SwitchNode::m_odinTboRatio),
+                          MakeDoubleChecker<double>(0, 1))
             .AddAttribute("CcMode", "CC mode.", UintegerValue(0),
                           MakeUintegerAccessor(&SwitchNode::m_ccMode),
                           MakeUintegerChecker<uint32_t>())
@@ -403,7 +406,13 @@ void SwitchNode::SwitchNotifyDequeue(uint32_t ifIndex, uint32_t qIndex, Ptr<Pack
             IntHeader *ih = (IntHeader *)&buf[PppHeader::GetStaticSize() + 20 + 8 +
                                               6];  // ppp, ip, udp, SeqTs, INT
             Ptr<QbbNetDevice> dev = DynamicCast<QbbNetDevice>(m_devices[ifIndex]);
-            if (m_ccMode == 3) {  // HPCC
+            if (m_ccMode == 9) {
+                NS_ABORT_MSG_IF(ih->GetHopCount() >= IntHeader::maxHop,
+                                "Odin path exceeds INT hop capacity");
+                if (m_mmu->GetUsedBufferTotal() > m_odinTboRatio * m_mmu->GetMmuBufferBytes())
+                    ih->MarkTbo();
+            }
+            if (m_ccMode == 3 || m_ccMode == 9) {  // HPCC / Odin
                 ih->PushHop(Simulator::Now().GetTimeStep(), m_txBytes[ifIndex],
                             dev->GetQueue()->GetNBytesTotal(), dev->GetDataRate().GetBitRate());
             }
