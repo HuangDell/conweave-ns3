@@ -1,0 +1,92 @@
+{
+  "version": "odalign-v1",
+  "seed": 1,
+  "source": {
+    "parent": {
+      "revision": "4e9f41551e3762903dcf5bba881546458727490c",
+      "dirty": true
+    },
+    "ns3": {
+      "revision": "2edae7fec0dd47b070cf49e3bdc372e9ad5b76da",
+      "dirty": true
+    }
+  },
+  "topology_sha256": "dd3f5465bb4c8f0b5c7ce46e38866670d8e1a666567e6d7a9d23b0773ca2de4b",
+  "generator_sha256": "d42216de0b18e789114e81b54ada0470a73afa7a81124b26824c6234b532f544",
+  "cases": {
+    "smoke": {
+      "flow_count": 1,
+      "bytes": 256000,
+      "selected_flow_ids": [
+        0
+      ],
+      "flow": {
+        "filename": "smoke.flow.txt",
+        "sha256": "17cfecdd1211505828cb929ed0133f9ccf10af87558487c4c9e17a4f5a197c13"
+      },
+      "job": {
+        "filename": "smoke.job.txt",
+        "sha256": "a77621a18fada860e6ec8730c77273995121c95561c5f66479dea4dd326346ae"
+      }
+    },
+    "a2a": {
+      "flow_count": 80010,
+      "bytes": 20482560000,
+      "selected_flow_ids": [
+        5534,
+        11803,
+        11823,
+        14983,
+        17014,
+        25776,
+        26630,
+        27025,
+        31075,
+        47088,
+        50573,
+        51472,
+        52403,
+        60105,
+        62579
+      ],
+      "flow": {
+        "filename": "a2a.flow.txt",
+        "sha256": "5a1436d020fda9173f45904e679b43fe06e629d869236957f27c9b998a56d1a8"
+      },
+      "job": {
+        "filename": "a2a.job.txt",
+        "sha256": "3687eca8082fa5035ee0a3e57818e87b689c481b0da43c2177eb78ae65461808"
+      }
+    },
+    "a2a-short": {
+      "flow_count": 80910,
+      "bytes": 20489760000,
+      "selected_flow_ids": [
+        5534,
+        11803,
+        11823,
+        14983,
+        17014,
+        25776,
+        26630,
+        27025,
+        31075,
+        47088,
+        50573,
+        51472,
+        52403,
+        60105,
+        62579,
+        80010
+      ],
+      "flow": {
+        "filename": "a2a-short.flow.txt",
+        "sha256": "24cc4e036eabd580806137da333a7779019f144d9ee17238383d418a3b9a6a33"
+      },
+      "job": {
+        "filename": "a2a-short.job.txt",
+        "sha256": "c1a57c05e56900a8d27f9a6583f94dc6d5baa47f41a2e08750db70fc159adba0"
+      }
+    }
+  }
+}

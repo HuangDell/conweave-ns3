@@ -6,6 +6,7 @@
 #include <ns3/rdma.h>
 #include <ns3/selective-packet-queue.h>
 
+#include <set>
 #include <unordered_map>
 #include <unordered_set>
 #include "ns3/traced-callback.h"
@@ -54,6 +55,8 @@ class RdmaHw : public Object {
     bool m_backto0;
     bool m_var_win, m_fast_react;
     bool m_rateBound;
+    bool m_odinTraceEnabled = false;
+    std::set<int32_t> m_odinTraceFlowIds;
     double m_odinEta, m_odinGamma;
     DataRate m_odinBeta;
     TracedCallback<Ptr<RdmaQueuePair>, const OdinEvent&> m_traceOdin;

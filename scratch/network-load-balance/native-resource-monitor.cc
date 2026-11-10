@@ -28,7 +28,10 @@ bool NativeResourceMonitor::Open() {
     fprintf(resources_, "time_ns,node,kind,interface,established_qps,ever_used_qps,"
             "unsent_qps,unfinished_qps,unfinished_peers,serviced_qps_in_window,"
             "payload_attempt_bytes,tx_started_wire_bytes,tx_reserved_busy_ns,"
-            "queue_bytes,mmu_used_bytes,pg3_pause_ns,rate_bps,window_start_ns,tx_elapsed_busy_ns\n");
+            "queue_bytes,mmu_used_bytes,pg3_pause_ns,rate_bps,window_start_ns,tx_elapsed_busy_ns");
+    if (config_.cc.mode == CC_MODE_ODIN)
+        fprintf(resources_, ",odin_active_qps,odin_sum_bps,odin_u");
+    fprintf(resources_, "\n");
     fprintf(qp_events_, "time_ns,event,flow_id,src,dst,sport,dport,pg,bytes,recovery_count,generated_payload_bytes\n");
     fprintf(pfc_, "node,interface,pg,start_ns,end_ns,right_censored\n");
     return true;
@@ -166,12 +169,21 @@ void NativeResourceMonitor::Sample() {
             PauseState& pause = pauses_[PauseKey(i, port, 3)];
             uint64_t pause_ns = pause.total_ns + (pause.paused ? now - pause.start_ns : 0);
             uint64_t queue = host ? 0 : dev->GetQueue()->GetNBytesTotal();
-            fprintf(resources_, "%lu,%u,%s,%u,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu\n",
+            fprintf(resources_, "%lu,%u,%s,%u,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu",
                     now, i, host ? "host" : "switch", port, established, used, unsent, unfinished,
                     static_cast<uint64_t>(peers.size()), static_cast<uint64_t>(serviced_[i].size()),
                     payload_attempt_bytes_[i], dev->GetTxDepartedBytes(), dev->GetTxBusyTimeNs(),
                     queue, mmu, pause_ns, dev->GetDataRate().GetBitRate(),
                     sampled_ ? last_sample_ns_ : now, dev->GetTxElapsedBusyTimeNs());
+            if (config_.cc.mode == CC_MODE_ODIN) {
+                if (host) {
+                    const auto& odin = node->GetObject<RdmaDriver>()->m_rdma->m_nic[port].odin;
+                    fprintf(resources_, ",%u,%lu,%.17g", odin.Active(), odin.Sum(), odin.Utilization());
+                } else {
+                    fprintf(resources_, ",0,0,0");
+                }
+            }
+            fprintf(resources_, "\n");
         }
     }
     for (auto& entry : qps_)

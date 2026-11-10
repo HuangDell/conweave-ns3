@@ -14,7 +14,21 @@ bool LoadExperimentConfig(const std::string& path, ExperimentConfig* config) {
 
     std::string key;
     while (conf >> key) {
-        if (key == "ODIN_ETA") {
+        if (key == "EXPECTED_BDP_BYTES") {
+            conf >> config->expected_bdp_bytes;
+        } else if (key == "ONE_HOP_DELAY_NS") {
+            conf >> config->one_hop_delay_ns;
+        } else if (key == "BUFFER_SIZE_BYTES") {
+            conf >> config->buffer_size_bytes;
+        } else if (key == "ODIN_LOG_FLOW_IDS") {
+            uint32_t count = 0;
+            if (!(conf >> count) || count > 1000000) return false;
+            for (uint32_t i = 0; i < count; ++i) {
+                int32_t id = -1;
+                if (!(conf >> id) || id < 0 || !config->monitoring.odin_log_flow_ids.insert(id).second)
+                    return false;
+            }
+        } else if (key == "ODIN_ETA") {
             conf >> config->cc.odin_eta;
         } else if (key == "ODIN_GAMMA") {
             conf >> config->cc.odin_gamma;

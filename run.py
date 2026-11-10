@@ -390,6 +390,27 @@ def parse_completion_counts(output_log, fct_output):
     }
 
 
+def validate_physical_options(args):
+    if not 1 <= args.packet_payload_bytes <= 60000:
+        raise ValueError('--packet-payload-bytes must be in [1, 60000]')
+    if not 1 <= args.link_delay_ns <= 1000000:
+        raise ValueError('--link-delay-ns must be in [1, 1000000]')
+    if not 0 <= args.expected_bdp_bytes < 2**32:
+        raise ValueError('--expected-bdp-bytes exceeds the QP window range')
+    if not 0 <= args.buffer_bytes < 2**32:
+        raise ValueError('--buffer-bytes exceeds the MMU counter range')
+    if args.buffer_bytes and args.buffer_bytes <= args.packet_payload_bytes + 90:
+        raise ValueError('--buffer-bytes must exceed one complete data packet')
+    if not math.isfinite(args.min_rate_mbps) or not 0 < args.min_rate_mbps <= float(args.bw) * 1000:
+        raise ValueError('--min-rate-mbps must be positive and at most NIC line rate')
+    ids = [] if not args.odin_log_flow_ids else [int(v) for v in args.odin_log_flow_ids.split(',')]
+    if any(v < 0 for v in ids) or len(set(ids)) != len(ids):
+        raise ValueError('--odin-log-flow-ids must contain unique nonnegative flow IDs')
+    if ids and (args.cc != 'odin' or not args.odin_log):
+        raise ValueError('--odin-log-flow-ids requires Odin logging')
+    args.odin_log_flow_ids = sorted(ids)
+
+
 def validate_odin_options(args):
     """Reject unsupported Odin combinations before allocating outputs or inputs."""
     if args.cc != 'odin':
@@ -588,9 +609,19 @@ def main():
     parser.add_argument('--odin-beta-mbps', type=float, default=5.0)
     parser.add_argument('--odin-tbo-ratio', type=float, default=1.0 / 16)
     parser.add_argument('--odin-log', type=int, choices=(0, 1), default=0)
+    parser.add_argument('--packet-payload-bytes', type=int, default=1000)
+    parser.add_argument('--link-delay-ns', type=int, default=1000)
+    parser.add_argument('--expected-bdp-bytes', type=int, default=0,
+                        help='Expected path BDP for a topology outside the legacy registry')
+    parser.add_argument('--buffer-bytes', type=int, default=0,
+                        help='Exact byte capacity; zero retains the legacy --buffer MiB setting')
+    parser.add_argument('--min-rate-mbps', type=float, default=100.0)
+    parser.add_argument('--odin-log-flow-ids', default='',
+                        help='Optional comma-separated flow IDs; empty logs all QPs')
     parser.add_argument('--prepare-only', action='store_true',
                         help='Write config and manifest, without starting NS-3')
     args = parser.parse_args()
+    validate_physical_options(args)
     validate_odin_options(args)
     if not os.path.exists(output_root):
         os.makedirs(output_root, exist_ok=True)
@@ -843,6 +874,8 @@ def main():
 
     trace_metadata = validate_flow_file(
         flow_file, n_host, flowgen_start_time, flowgen_stop_time)
+    if args.odin_log_flow_ids and args.odin_log_flow_ids[-1] >= trace_metadata['flow_count']:
+        raise ValueError('Selected Odin flow ID is outside the frozen input')
 
     job_metadata = None
     if args.job_file:
@@ -938,10 +971,9 @@ def main():
         ))
 
     # 1 BDP calculation
-    if topo2bdp.get(topo) == None:
-        print("ERROR - topology is not registered in run.py!!", flush=True)
-        return
-    bdp = int(topo2bdp[topo])
+    if not args.expected_bdp_bytes and topo not in topo2bdp:
+        raise ValueError('Unknown topology: provide --expected-bdp-bytes')
+    bdp = args.expected_bdp_bytes or int(topo2bdp[topo])
     print("1BDP = {}".format(bdp))
 
     # DCQCN parameters (NOTE: HPCC's 400KB/1600KB is too large, although used in Microsoft)
@@ -1042,6 +1074,18 @@ def main():
                    f"ODIN_TBO_RATIO {args.odin_tbo_ratio}\nODIN_LOG {args.odin_log}\n"
                    f"ODIN_OUTPUT_FILE mix/output/{config_ID}/{config_ID}_out_odin.csv\n")
 
+    config = config.replace('PACKET_PAYLOAD_SIZE 1000\n',
+                            f'PACKET_PAYLOAD_SIZE {args.packet_payload_bytes}\n')
+    if args.min_rate_mbps != 100:
+        config = config.replace('MIN_RATE 100Mb/s\n', f'MIN_RATE {args.min_rate_mbps}Mb/s\n')
+    for key, value, default in [('ONE_HOP_DELAY_NS', args.link_delay_ns, 1000),
+                                ('EXPECTED_BDP_BYTES', args.expected_bdp_bytes, 0),
+                                ('BUFFER_SIZE_BYTES', args.buffer_bytes, 0)]:
+        if value != default:
+            config += f'{key} {value}\n'
+    if args.odin_log_flow_ids:
+        config += ('ODIN_LOG_FLOW_IDS ' + str(len(args.odin_log_flow_ids)) + ' ' +
+                   ' '.join(map(str, args.odin_log_flow_ids)) + '\n')
     with open(config_name, "w") as file:
         file.write(config)
 
@@ -1139,6 +1183,10 @@ def main():
             beta_mbps=args.odin_beta_mbps, tbo_ratio=args.odin_tbo_ratio, log=args.odin_log,
             initial_u=1, initial_rate='nic_line_rate', active_until='final_ack',
             sample='current_queue_max_hop_no_extra_ewma', global_t=0)
+    manifest['config']['physical'] = dict(
+        packet_payload_bytes=args.packet_payload_bytes, link_delay_ns=args.link_delay_ns,
+        expected_bdp_bytes=bdp, buffer_bytes=args.buffer_bytes or int(float(buffer) * 1024 * 1024),
+        min_rate_mbps=args.min_rate_mbps, odin_log_flow_ids=args.odin_log_flow_ids)
     write_json(manifest_path, manifest)
     if args.prepare_only:
         print('Prepared configuration only: ' + config_name)

@@ -31,3 +31,23 @@ LD_LIBRARY_PATH=/home/cch/sflowlet/external/conweave-ns3/build:$LD_LIBRARY_PATH 
 LD_LIBRARY_PATH=/home/cch/sflowlet/external/conweave-ns3/build:$LD_LIBRARY_PATH /home/cch/sflowlet/external/conweave-ns3/build/scratch/network-load-balance/network-load-balance /home/cch/sflowlet/external/conweave-ns3/mix/output/s2-pool-load120-avoid-seed1/config.txt > /home/cch/sflowlet/external/conweave-ns3/mix/output/s2-pool-load120-avoid-seed1/config.log 2>&1
 LD_LIBRARY_PATH=/home/cch/sflowlet/external/conweave-ns3/build:$LD_LIBRARY_PATH gdb --args /home/cch/sflowlet/external/conweave-ns3/build/scratch/network-load-balance/network-load-balance /home/cch/sflowlet/external/conweave-ns3/mix/output/s2-pool-load120-avoid-seed1/config.txt
 
+11/10/26,odin-v1-single-seed1,9,0,1000,4,16,64,400,1,0,1,1,leaf_spine_16_100G_OS2,100,AliStorage2019,2,0.01
+LD_LIBRARY_PATH=/home/hdl/sflowlet/external/conweave-ns3/build:$LD_LIBRARY_PATH /home/hdl/sflowlet/external/conweave-ns3/build/scratch/network-load-balance/network-load-balance /home/hdl/sflowlet/external/conweave-ns3/mix/output/odin-v1-single-seed1/config.txt > /home/hdl/sflowlet/external/conweave-ns3/mix/output/odin-v1-single-seed1/config.log 2>&1
+LD_LIBRARY_PATH=/home/hdl/sflowlet/external/conweave-ns3/build:$LD_LIBRARY_PATH gdb --args /home/hdl/sflowlet/external/conweave-ns3/build/scratch/network-load-balance/network-load-balance /home/hdl/sflowlet/external/conweave-ns3/mix/output/odin-v1-single-seed1/config.txt
+
+11/10/26,odin-v1-dual-k40-seed1,9,0,1000,4,16,64,400,1,0,1,1,leaf_spine_16_100G_OS2,100,AliStorage2019,2,0.01
+11/10/26,odin-v1-dual-k1-logoff-seed1,9,0,1000,4,16,64,400,1,0,1,1,leaf_spine_16_100G_OS2,100,AliStorage2019,2,0.01
+11/10/26,odin-v1-dual-k1-seed1,9,0,1000,4,16,64,400,1,0,1,1,leaf_spine_16_100G_OS2,100,AliStorage2019,2,0.01
+11/10/26,odin-v1-contended-k40-seed1,9,0,1000,4,16,64,400,1,0,1,1,leaf_spine_16_100G_OS2,100,AliStorage2019,2,0.01
+LD_LIBRARY_PATH=/home/hdl/sflowlet/external/conweave-ns3/build:$LD_LIBRARY_PATH /home/hdl/sflowlet/external/conweave-ns3/build/scratch/network-load-balance/network-load-balance /home/hdl/sflowlet/external/conweave-ns3/mix/output/odin-v1-dual-k40-seed1/config.txt > /home/hdl/sflowlet/external/conweave-ns3/mix/output/odin-v1-dual-k40-seed1/config.log 2>&1
+LD_LIBRARY_PATH=/home/hdl/sflowlet/external/conweave-ns3/build:$LD_LIBRARY_PATH gdb --args /home/hdl/sflowlet/external/conweave-ns3/build/scratch/network-load-balance/network-load-balance /home/hdl/sflowlet/external/conweave-ns3/mix/output/odin-v1-dual-k40-seed1/config.txt
+
+LD_LIBRARY_PATH=/home/hdl/sflowlet/external/conweave-ns3/build:$LD_LIBRARY_PATH /home/hdl/sflowlet/external/conweave-ns3/build/scratch/network-load-balance/network-load-balance /home/hdl/sflowlet/external/conweave-ns3/mix/output/odin-v1-dual-k1-seed1/config.txt > /home/hdl/sflowlet/external/conweave-ns3/mix/output/odin-v1-dual-k1-seed1/config.log 2>&1
+LD_LIBRARY_PATH=/home/hdl/sflowlet/external/conweave-ns3/build:$LD_LIBRARY_PATH gdb --args /home/hdl/sflowlet/external/conweave-ns3/build/scratch/network-load-balance/network-load-balance /home/hdl/sflowlet/external/conweave-ns3/mix/output/odin-v1-dual-k1-seed1/config.txt
+
+LD_LIBRARY_PATH=/home/hdl/sflowlet/external/conweave-ns3/build:$LD_LIBRARY_PATH /home/hdl/sflowlet/external/conweave-ns3/build/scratch/network-load-balance/network-load-balance /home/hdl/sflowlet/external/conweave-ns3/mix/output/odin-v1-dual-k1-logoff-seed1/config.txt > /home/hdl/sflowlet/external/conweave-ns3/mix/output/odin-v1-dual-k1-logoff-seed1/config.log 2>&1
+LD_LIBRARY_PATH=/home/hdl/sflowlet/external/conweave-ns3/build:$LD_LIBRARY_PATH gdb --args /home/hdl/sflowlet/external/conweave-ns3/build/scratch/network-load-balance/network-load-balance /home/hdl/sflowlet/external/conweave-ns3/mix/output/odin-v1-dual-k1-logoff-seed1/config.txt
+
+LD_LIBRARY_PATH=/home/hdl/sflowlet/external/conweave-ns3/build:$LD_LIBRARY_PATH /home/hdl/sflowlet/external/conweave-ns3/build/scratch/network-load-balance/network-load-balance /home/hdl/sflowlet/external/conweave-ns3/mix/output/odin-v1-contended-k40-seed1/config.txt > /home/hdl/sflowlet/external/conweave-ns3/mix/output/odin-v1-contended-k40-seed1/config.log 2>&1
+LD_LIBRARY_PATH=/home/hdl/sflowlet/external/conweave-ns3/build:$LD_LIBRARY_PATH gdb --args /home/hdl/sflowlet/external/conweave-ns3/build/scratch/network-load-balance/network-load-balance /home/hdl/sflowlet/external/conweave-ns3/mix/output/odin-v1-contended-k40-seed1/config.txt
+

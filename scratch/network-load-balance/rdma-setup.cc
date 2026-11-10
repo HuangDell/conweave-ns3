@@ -87,6 +87,8 @@ void InstallRdmaHosts(const ExperimentConfig& config, SimulationState& state, ui
         hardware->SetAttribute("L2ChunkSize", UintegerValue(config.cc.l2_chunk_size));
         hardware->SetAttribute("L2AckInterval", UintegerValue(config.cc.l2_ack_interval));
         hardware->SetAttribute("CcMode", UintegerValue(config.cc.mode));
+        hardware->m_odinTraceEnabled = config.monitoring.odin_log != 0;
+        hardware->m_odinTraceFlowIds = config.monitoring.odin_log_flow_ids;
         hardware->SetAttribute("OdinEta", DoubleValue(config.cc.odin_eta));
         hardware->SetAttribute("OdinGamma", DoubleValue(config.cc.odin_gamma));
         hardware->SetAttribute("OdinBeta", DataRateValue(DataRate(

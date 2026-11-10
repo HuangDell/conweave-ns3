@@ -407,6 +407,9 @@ void SwitchNode::SwitchNotifyDequeue(uint32_t ifIndex, uint32_t qIndex, Ptr<Pack
                                               6];  // ppp, ip, udp, SeqTs, INT
             Ptr<QbbNetDevice> dev = DynamicCast<QbbNetDevice>(m_devices[ifIndex]);
             if (m_ccMode == 9) {
+                NS_ABORT_MSG_IF(uint64_t(dev->GetQueue()->GetNBytesTotal()) >=
+                    (uint64_t(1) << IntHop::qlenWidth) * IntHop::qlenUnit * IntHop::multi,
+                    "Odin INT queue exceeds compressed field range");
                 NS_ABORT_MSG_IF(ih->GetHopCount() >= IntHeader::maxHop,
                                 "Odin path exceeds INT hop capacity");
                 if (m_mmu->GetUsedBufferTotal() > m_odinTboRatio * m_mmu->GetMmuBufferBytes())

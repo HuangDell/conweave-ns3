@@ -3,6 +3,7 @@
 #include "monitoring.h"
 
 #include <ns3/broadcom-node.h>
+#include <ns3/custom-header.h>
 #include <ns3/error-model.h>
 #include <ns3/ipv4-static-routing-helper.h>
 #include <ns3/qbb-channel.h>
@@ -99,7 +100,13 @@ bool TopologyManager::Build(SimulationMonitor& monitor) {
             return false;
         }
 
-        assert(std::to_string(config_.one_hop_delay_ns) + "ns" == link_delay);
+        NS_ABORT_MSG_IF(std::to_string(config_.one_hop_delay_ns) + "ns" != link_delay,
+                        "Topology link delay differs from ONE_HOP_DELAY_NS");
+        for (uint32_t id : {source_id, destination_id}) {
+            NS_ABORT_MSG_IF(node_type[id] == 1 &&
+                            state_.nodes.Get(id)->GetNDevices() >= SwitchMmu::pCnt,
+                            "Topology exceeds supported switch port count");
+        }
         state_.link_pairs.push_back(std::make_pair(source_id, destination_id));
         Ptr<Node> source = state_.nodes.Get(source_id);
         Ptr<Node> destination = state_.nodes.Get(destination_id);
@@ -191,12 +198,15 @@ bool TopologyManager::Build(SimulationMonitor& monitor) {
                                           config_.cc.rate_to_pmax.at(rate));
             uint64_t delay =
                 DynamicCast<QbbChannel>(device->GetChannel())->GetDelay().GetTimeStep();
-            uint32_t headroom =
-                rate * delay / 8 / 1000000000 * 2 + 2 * switch_node->m_mmu->MTU;
+            uint32_t wire_mtu = config_.packet_payload_size == 1000 ? SwitchMmu::MTU :
+                std::max<uint32_t>(uint32_t(SwitchMmu::MTU),
+                    config_.packet_payload_size + CustomHeader::GetStaticWholeHeaderSize());
+            uint32_t headroom = rate * delay / 8 / 1000000000 * 2 + 2 * wire_mtu;
             switch_node->m_mmu->ConfigHdrm(j, headroom);
         }
         switch_node->m_mmu->ConfigNPort(switch_node->GetNDevices() - 1);
-        switch_node->m_mmu->ConfigBufferSize(config_.buffer_size_mb * 1024 * 1024);
+        switch_node->m_mmu->ConfigBufferSize(config_.buffer_size_bytes ?
+            config_.buffer_size_bytes : config_.buffer_size_mb * 1024 * 1024);
         switch_node->m_mmu->node_id = switch_node->GetId();
         NS_LOG_INFO("Node %u : Broadcom switch (%u ports / %gMB MMU)\n" %
                     (i, switch_node->GetNDevices() - 1,
@@ -320,10 +330,16 @@ void TopologyManager::CalculateRoutesAndMetrics() {
         }
     }
     fprintf(stderr, "maxRtt: %lu, maxBdp: %lu\n", state_.max_rtt, state_.max_bdp);
-    assert(state_.max_bdp == GetIrnBdp());
+    if (config_.expected_bdp_bytes) {
+        NS_ABORT_MSG_IF(state_.max_bdp != config_.expected_bdp_bytes,
+                        "Computed path BDP differs from EXPECTED_BDP_BYTES");
+    } else {
+        assert(state_.max_bdp == GetIrnBdp());
+    }
 }
 
 uint64_t TopologyManager::GetIrnBdp() const {
+    if (config_.expected_bdp_bytes) return config_.expected_bdp_bytes;
     static const std::map<std::string, uint32_t> topology_to_bdp = {
         {"leaf_spine_128_100G_OS2", 104000},
         {"leaf_spine_16_100G_OS2", 104000},

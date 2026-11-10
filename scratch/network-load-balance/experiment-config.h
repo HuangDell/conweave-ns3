@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <string>
+#include <set>
 #include <tuple>
 #include <unordered_map>
 #include <vector>
@@ -142,6 +143,7 @@ struct MonitoringConfig {
     uint64_t irn_start_ns = 0;
     uint64_t irn_bucket_ns = 100000;
     uint32_t odin_log = 0;
+    std::set<int32_t> odin_log_flow_ids;
     uint32_t native_resource_log = 0;
     uint32_t native_qp_mechanism_log = 0;
     uint32_t conweave_causal_trace = 0;
@@ -208,6 +210,7 @@ struct ExperimentConfig {
     IoConfig io;
     FailureConfig failures;
 
+    uint64_t expected_bdp_bytes = 0;
     uint64_t one_hop_delay_ns = 1000;
     std::string data_rate;
     std::string link_delay;
@@ -217,6 +220,7 @@ struct ExperimentConfig {
     double simulator_extra_time = 0.1;
     double error_rate_per_link = 0.0;
     uint32_t buffer_size_mb = 0;
+    uint32_t buffer_size_bytes = 0;
     double load = 10.0;
     int random_seed = 1;
 };

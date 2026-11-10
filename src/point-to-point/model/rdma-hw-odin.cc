@@ -6,6 +6,8 @@
 
 namespace ns3 {
 void RdmaHw::TraceOdin(Ptr<RdmaQueuePair> qp, OdinEvent event) {
+    if (!m_odinTraceEnabled || (!m_odinTraceFlowIds.empty() &&
+        !m_odinTraceFlowIds.count(qp->m_flow_id))) return;
     auto& controller = m_nic[qp->odin.nic].odin;
     event.nic = qp->odin.nic;
     event.active = controller.Active();
