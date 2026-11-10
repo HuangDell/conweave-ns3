@@ -1,0 +1,11 @@
+flow_id,job_id,stage_id,traffic_class
+0,-1,-1,background
+1,-1,-1,background
+2,-1,-1,background
+3,0,0,foreground
+4,-1,-1,background
+5,1,0,foreground
+6,-1,-1,background
+7,-1,-1,background
+8,-1,-1,background
+9,-1,-1,background

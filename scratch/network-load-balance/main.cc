@@ -3,6 +3,7 @@
 #include "experiment-config.h"
 #include "load-balancer-setup.h"
 #include "monitoring.h"
+#include "odin-resource-feedback.h"
 #include "rdma-setup.h"
 #include "simulation-state.h"
 #include "topology.h"
@@ -78,6 +79,12 @@ int main(int argc, char* argv[]) {
     }
     topology.BuildTorInterfaceMaps();
     monitor.StartPeriodicMonitoring();
+    nlb::OdinResourceFeedback resource_feedback(config, state);
+    if (!resource_feedback.Start()) {
+        std::cerr << "Error: cannot start Odin resource feedback\n";
+        resource_feedback.Close();
+        return 1;
+    }
 
     std::cout << "------------------------------------------" << std::endl;
     std::cout << "Running Simulation.\n";
@@ -86,6 +93,7 @@ int main(int argc, char* argv[]) {
     monitor.StartCompletionMonitoring(traffic.TargetCompletionCount());
     Simulator::Stop(Seconds(config.flowgen_stop_time + 10.0));
     Simulator::Run();
+    resource_feedback.Close();
     monitor.CloseOutputs();
     Simulator::Destroy();
 

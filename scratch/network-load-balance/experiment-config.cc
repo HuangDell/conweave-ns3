@@ -14,7 +14,25 @@ bool LoadExperimentConfig(const std::string& path, ExperimentConfig* config) {
 
     std::string key;
     while (conf >> key) {
-        if (key == "EXPECTED_BDP_BYTES") {
+        if (key == "ODIN_RESOURCE_FEEDBACK") {
+            conf >> config->cc.odin_resource_feedback;
+        } else if (key == "ODIN_RESOURCE_HOST") {
+            conf >> config->cc.odin_resource_host;
+        } else if (key == "ODIN_RESOURCE_PERIOD_NS") {
+            conf >> config->cc.odin_resource_period_ns;
+        } else if (key == "ODIN_RESOURCE_WINDOW_NS") {
+            conf >> config->cc.odin_resource_window_ns;
+        } else if (key == "ODIN_RESOURCE_DELAY_NS") {
+            conf >> config->cc.odin_resource_delay_ns;
+        } else if (key == "ODIN_RESOURCE_START_NS") {
+            conf >> config->cc.odin_resource_start_ns;
+        } else if (key == "ODIN_RESOURCE_DESTINATIONS") {
+            uint32_t count = 0, destination = 0;
+            if (!(conf >> count) || count > 1000000) return false;
+            for (uint32_t i = 0; i < count; ++i)
+                if (!(conf >> destination) || !config->cc.odin_resource_destinations.insert(destination).second)
+                    return false;
+        } else if (key == "EXPECTED_BDP_BYTES") {
             conf >> config->expected_bdp_bytes;
         } else if (key == "ONE_HOP_DELAY_NS") {
             conf >> config->one_hop_delay_ns;

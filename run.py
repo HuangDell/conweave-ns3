@@ -415,8 +415,8 @@ def validate_physical_options(args):
 def validate_odin_options(args):
     """Reject unsupported Odin combinations before allocating outputs or inputs."""
     if args.cc != 'odin':
-        if args.odin_log:
-            raise ValueError('--odin-log requires --cc odin')
+        if args.odin_log or args.odin_resource_feedback:
+            raise ValueError('--odin-log and --odin-resource-feedback require --cc odin')
         return
     for name in ('odin_eta', 'odin_gamma'):
         value = getattr(args, name)
@@ -431,6 +431,21 @@ def validate_odin_options(args):
             args.irn or args.pfc != 1 or args.degrade_link):
         raise ValueError('Odin v1 requires ordinary fixed-path ECMP QPs, PFC=1, IRN=0, '
                          'no pool/chunk/estimator/host sensing/link degradation')
+    if args.odin_resource_feedback:
+        period, window = args.odin_resource_period_ns, args.odin_resource_window_ns
+        if (not args.odin_log or args.odin_resource_host < 0 or period <= 0 or window < period or
+                window % period or window // period > 100000 or args.odin_resource_delay_ns < 0 or
+                args.odin_resource_start_ns < 2000000000 + window or
+                (args.odin_resource_start_ns - 2000000000) % period):
+            raise ValueError('invalid resource timing: log=1, integral window/period, aligned start >= 2s+window required')
+        try:
+            destinations = [int(v) for v in args.odin_resource_destinations.split(',')]
+        except ValueError as error:
+            raise ValueError('resource destinations must be comma-separated host IDs') from error
+        if (not destinations or len(set(destinations)) != len(destinations) or
+                any(v < 0 or v == args.odin_resource_host for v in destinations)):
+            raise ValueError('invalid resource destinations')
+        args.odin_resource_destinations = sorted(destinations)
 
 
 def main():
@@ -612,6 +627,14 @@ def main():
     parser.add_argument('--odin-beta-mbps', type=float, default=5.0)
     parser.add_argument('--odin-tbo-ratio', type=float, default=1.0 / 16)
     parser.add_argument('--odin-log', type=int, choices=(0, 1), default=0)
+    parser.add_argument('--odin-resource-feedback', type=int, choices=(0, 1), default=0,
+                        help='Experimental ideal same-ToR resource reports; zero wire overhead')
+    parser.add_argument('--odin-resource-host', type=int, default=0)
+    parser.add_argument('--odin-resource-destinations', default='1,2')
+    parser.add_argument('--odin-resource-period-ns', type=int, default=8000)
+    parser.add_argument('--odin-resource-window-ns', type=int, default=32000)
+    parser.add_argument('--odin-resource-delay-ns', type=int, default=2000)
+    parser.add_argument('--odin-resource-start-ns', type=int, default=2001000000)
     parser.add_argument('--packet-payload-bytes', type=int, default=1000)
     parser.add_argument('--link-delay-ns', type=int, default=1000)
     parser.add_argument('--expected-bdp-bytes', type=int, default=0,
@@ -1079,6 +1102,15 @@ def main():
                    f"ODIN_BETA_MBPS {args.odin_beta_mbps}\n"
                    f"ODIN_TBO_RATIO {args.odin_tbo_ratio}\nODIN_LOG {args.odin_log}\n"
                    f"ODIN_OUTPUT_FILE mix/output/{config_ID}/{config_ID}_out_odin.csv\n")
+        if args.odin_resource_feedback:
+            for key, value in [('FEEDBACK', 1), ('HOST', args.odin_resource_host),
+                               ('PERIOD_NS', args.odin_resource_period_ns),
+                               ('WINDOW_NS', args.odin_resource_window_ns),
+                               ('DELAY_NS', args.odin_resource_delay_ns),
+                               ('START_NS', args.odin_resource_start_ns)]:
+                config += f'ODIN_RESOURCE_{key} {value}\n'
+            config += ('ODIN_RESOURCE_DESTINATIONS ' + str(len(args.odin_resource_destinations)) + ' ' +
+                       ' '.join(map(str, args.odin_resource_destinations)) + '\n')
 
     config = config.replace('PACKET_PAYLOAD_SIZE 1000\n',
                             f'PACKET_PAYLOAD_SIZE {args.packet_payload_bytes}\n')
@@ -1190,6 +1222,13 @@ def main():
             beta_mbps=args.odin_beta_mbps, tbo_ratio=args.odin_tbo_ratio, log=args.odin_log,
             initial_u=1, initial_rate='nic_line_rate', active_until='final_ack',
             sample='current_queue_max_hop_no_extra_ewma', global_t=0)
+        if args.odin_resource_feedback:
+            manifest['config']['odin']['resource_feedback'] = dict(
+                channel='ideal_scheduled_event_zero_wire_overhead', host=args.odin_resource_host,
+                destinations=args.odin_resource_destinations, period_ns=args.odin_resource_period_ns,
+                window_ns=args.odin_resource_window_ns, delay_ns=args.odin_resource_delay_ns,
+                start_ns=args.odin_resource_start_ns, ack_cc_after_start=False,
+                qp_order='ascending_flow_id', zero_psi='skip', unsent_only=True)
     manifest['config']['physical'] = dict(
         packet_payload_bytes=args.packet_payload_bytes, link_delay_ns=args.link_delay_ns,
         expected_bdp_bytes=bdp, buffer_bytes=args.buffer_bytes or int(float(buffer) * 1024 * 1024),

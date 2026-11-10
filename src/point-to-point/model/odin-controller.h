@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <map>
+#include <vector>
 
 namespace ns3 {
 
@@ -30,7 +31,17 @@ class OdinController {
     std::map<uint64_t, uint64_t> rates_;
 };
 
-// Passive trace payload, emitted synchronously; no observation events are scheduled.
+// One same-ToR resource observation. The experimental delivery channel is outside
+// the data plane; it never acknowledges data or supplies a sending credit.
+struct OdinResourceSample {
+    uint32_t destination_ip = 0, switch_id = 0, interface = 0;
+    uint64_t window_start_ns = 0, measured_ns = 0, delta_bytes = 0;
+    uint64_t begin_tx_bytes = 0, end_tx_bytes = 0;
+    uint64_t line_bps = 0, queue_bytes = 0;
+    bool tbo = false;
+};
+
+// Trace payload emitted synchronously, including optional resource provenance.
 struct OdinEvent {
     const char* event = "skip";
     const char* reason = "none";
@@ -42,6 +53,8 @@ struct OdinEvent {
     uint32_t sample_hop = 0, sample_queue_bytes = 0;
     uint64_t sample_dt_ns = 0, sample_delta_bytes = 0, sample_line_bps = 0;
     uint64_t sample_time_mod_ns = 0;  // Passive raw 24-bit INT clock; no control input change.
+    uint64_t resource_version = 0, resource_measured_ns = 0, resource_window_start_ns = 0;
+    uint32_t resource_switch = 0, resource_interface = 0;
     OdinController::Update control;
 };
 }  // namespace ns3

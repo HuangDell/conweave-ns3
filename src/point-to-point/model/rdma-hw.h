@@ -62,6 +62,11 @@ class RdmaHw : public Object {
     TracedCallback<Ptr<RdmaQueuePair>, const OdinEvent&> m_traceOdin;
     void HandleAckOdin(Ptr<RdmaQueuePair> qp, CustomHeader& ch);
     void TraceOdin(Ptr<RdmaQueuePair> qp, OdinEvent event);
+    bool m_odinResourceFeedback = false;
+    uint64_t m_odinResourceStartNs = 0, m_odinResourceVersion = 0;
+    std::set<uint32_t> m_odinResourceDestinations;
+    uint32_t ApplyOdinResourceFeedback(uint64_t version,
+                                     const std::vector<OdinResourceSample>& samples);
     std::vector<RdmaInterfaceMgr> m_nic;  // list of running nic controlled by this RdmaHw
     std::unordered_map<uint64_t, Ptr<RdmaQueuePair>> m_qpMap;      // mapping from uint64_t to qp
     std::unordered_map<uint64_t, Ptr<RdmaRxQueuePair>> m_rxQpMap;  // mapping from uint64_t to rx qp

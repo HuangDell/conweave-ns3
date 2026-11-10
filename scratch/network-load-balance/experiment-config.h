@@ -98,6 +98,10 @@ struct CongestionControlConfig {
     uint32_t mode = 1;
     double odin_eta = 0.95, odin_gamma = 0.1, odin_beta_mbps = 5;
     double odin_tbo_ratio = 1.0 / 16;
+    uint32_t odin_resource_feedback = 0, odin_resource_host = 0;
+    uint64_t odin_resource_period_ns = 8000, odin_resource_window_ns = 32000;
+    uint64_t odin_resource_delay_ns = 2000, odin_resource_start_ns = 0;
+    std::set<uint32_t> odin_resource_destinations;
     bool enable_qcn = true;
     bool enable_pfc = true;
     bool use_dynamic_pfc_threshold = true;
