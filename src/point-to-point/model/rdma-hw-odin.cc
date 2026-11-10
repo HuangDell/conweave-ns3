@@ -79,6 +79,7 @@ void RdmaHw::HandleAckOdin(Ptr<RdmaQueuePair> qp, CustomHeader& ch) {
         sample.sample_dt_ns = dt;
         sample.sample_delta_bytes = current.GetBytesDelta(previous);
         sample.sample_line_bps = rate;
+        sample.sample_time_mod_ns = current.GetTime();
         TraceOdin(qp, sample);
         psi = std::max(psi, value);
     }

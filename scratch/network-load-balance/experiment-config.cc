@@ -218,6 +218,8 @@ bool LoadExperimentConfig(const std::string& path, ExperimentConfig* config) {
             conf >> config->io.conweave_causal_trace_output_file;
         } else if (key == "NATIVE_QP_MECHANISM_LOG") {
             conf >> config->monitoring.native_qp_mechanism_log;
+        } else if (key == "NATIVE_GROUP_SERVICE_LOG") {
+            conf >> config->monitoring.native_group_service_log;
         } else if (key == "NATIVE_RESOURCE_LOG") {
             conf >> config->monitoring.native_resource_log;
         } else if (key == "MONITOR_UNTIL_COMPLETE") {

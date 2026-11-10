@@ -41,6 +41,7 @@ struct OdinEvent {
     uint64_t inflight_bytes = 0;
     uint32_t sample_hop = 0, sample_queue_bytes = 0;
     uint64_t sample_dt_ns = 0, sample_delta_bytes = 0, sample_line_bps = 0;
+    uint64_t sample_time_mod_ns = 0;  // Passive raw 24-bit INT clock; no control input change.
     OdinController::Update control;
 };
 }  // namespace ns3

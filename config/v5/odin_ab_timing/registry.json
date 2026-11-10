@@ -1,0 +1,66 @@
+{
+  "version": "odab-v1",
+  "seed": 1,
+  "source": {
+    "parent": {
+      "revision": "c928a9ca7a2151f44358a63d1809c45203f5a0f6",
+      "dirty": true
+    },
+    "ns3": {
+      "revision": "549a7c0f1ad9589dd541cd3a83fd5d32ec0ed1dd",
+      "dirty": true
+    }
+  },
+  "topology_sha256": "98b254ee941de2bc1c5a0cf2bb3898a4e3bf8d229650e06d64b01cd224808052",
+  "generator_sha256": "fef8e4d57a13e16aff5003825862447d8fd82cae666b021dd83c8b706f4835f7",
+  "cases": {
+    "smoke": {
+      "flow_count": 2,
+      "bytes": 256000,
+      "flow": {
+        "filename": "smoke.flow.txt",
+        "sha256": "16e59dac1d65322fb0b04830c5de0c166d96a9a7109b7394bb6f0d45cb756aad"
+      },
+      "job": {
+        "filename": "smoke.job.txt",
+        "sha256": "a2a92151da2d1529fc8bd7c1794d50c12bfcde123058a8a1d5ecf1062d9bc9c2"
+      }
+    },
+    "none": {
+      "flow_count": 80,
+      "bytes": 80000000,
+      "flow": {
+        "filename": "none.flow.txt",
+        "sha256": "dfc19dc48c43ae81913449295d7d1fdbfa4a2f99349881a089c42b1e27b7834d"
+      },
+      "job": {
+        "filename": "none.job.txt",
+        "sha256": "aa8c1550fe816c9a1ee82eb82eeb33ae96ea285332645d20d8c3ead81d1dac59"
+      }
+    },
+    "short": {
+      "flow_count": 120,
+      "bytes": 80640000,
+      "flow": {
+        "filename": "short.flow.txt",
+        "sha256": "87b6739da7bc30f831d31d151fc409b5a7e043fd25b0668e2f27dd0117177031"
+      },
+      "job": {
+        "filename": "short.job.txt",
+        "sha256": "0357a0651a19e799c3809b1e0a548c9eba4d2d86bf33ddc4ce33f7ceb9e46ec7"
+      }
+    },
+    "long": {
+      "flow_count": 120,
+      "bytes": 86400000,
+      "flow": {
+        "filename": "long.flow.txt",
+        "sha256": "dbe507c9481843d83f6ca9a4fe2e7ce20383650a8728e252ed0438accc131d00"
+      },
+      "job": {
+        "filename": "long.job.txt",
+        "sha256": "0357a0651a19e799c3809b1e0a548c9eba4d2d86bf33ddc4ce33f7ceb9e46ec7"
+      }
+    }
+  }
+}

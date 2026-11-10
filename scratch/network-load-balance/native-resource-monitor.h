@@ -37,12 +37,23 @@ class NativeResourceMonitor {
         bool paused = false;
     };
     using PauseKey = std::tuple<uint32_t, uint32_t, uint32_t>;
+    // direction (0=arrival, 1=service), switch, interface, source, destination, PG.
+    using GroupKey = std::tuple<uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t>;
+    struct GroupState {
+        uint64_t packets = 0, payload = 0, wire = 0, first_ns = 0, last_ns = 0;
+    };
     static void Registered(NativeResourceMonitor* self, ns3::Ptr<ns3::RdmaQueuePair> qp);
     static void Completed(NativeResourceMonitor* self, ns3::Ptr<ns3::RdmaQueuePair> qp);
     static void Tx(NativeResourceMonitor* self, ns3::Ptr<ns3::QbbNetDevice> device,
                    ns3::Ptr<const ns3::Packet> packet);
     static void Pause(NativeResourceMonitor* self, ns3::Ptr<ns3::QbbNetDevice> device,
                       uint32_t pg, bool paused);
+    static void GroupRx(NativeResourceMonitor* self, ns3::Ptr<ns3::QbbNetDevice> device,
+                        ns3::Ptr<const ns3::Packet> packet);
+    static void GroupTx(NativeResourceMonitor* self, ns3::Ptr<ns3::QbbNetDevice> device,
+                        ns3::Ptr<const ns3::Packet> packet);
+    void GroupPacket(ns3::Ptr<ns3::QbbNetDevice> device,
+                     ns3::Ptr<const ns3::Packet> packet, uint32_t direction);
     void QpEvent(ns3::Ptr<ns3::RdmaQueuePair> qp, const char* event);
     void Mechanism(QpState& state, const char* event, uint32_t seq = 0, uint32_t wire = 0);
     void WritePause(const PauseKey& key, const PauseState& state, bool censored);
@@ -59,6 +70,8 @@ class NativeResourceMonitor {
     FILE* resources_ = NULL;
     FILE* qp_events_ = NULL;
     FILE* pfc_ = NULL;
+    FILE* group_service_ = NULL;
+    std::map<GroupKey, GroupState> groups_;
     uint64_t last_sample_ns_ = 0;
     bool sampled_ = false;
 };

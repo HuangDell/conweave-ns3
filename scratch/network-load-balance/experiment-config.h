@@ -146,6 +146,7 @@ struct MonitoringConfig {
     std::set<int32_t> odin_log_flow_ids;
     uint32_t native_resource_log = 0;
     uint32_t native_qp_mechanism_log = 0;
+    uint32_t native_group_service_log = 0;
     uint32_t conweave_causal_trace = 0;
     uint32_t monitor_until_complete = 0;
     uint32_t native_diag_log = 0;

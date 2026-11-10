@@ -75,7 +75,7 @@ bool SimulationMonitor::OpenCoreOutputs() {
                 "psi,tbo,beta_bps,temporary_bps,branch,old_rate_bps,rate_bps,sum_before_bps,"
                 "sum_after_bps,u_before,u_after,base_rtt_ns,window_bytes,next_before_ns,"
                 "next_after_ns,last_packet_bytes,inflight_bytes,sample_hop,sample_queue_bytes,"
-                "sample_dt_ns,sample_delta_bytes,sample_line_bps\n");
+                "sample_dt_ns,sample_delta_bytes,sample_line_bps,sample_time_mod_ns\n");
     }
     pfc_output_ = fopen(config_.io.pfc_output_file.c_str(), "w");
     fct_output_ = fopen(config_.io.fct_output_file.c_str(), "w");
@@ -325,7 +325,7 @@ void SimulationMonitor::OdinTrace(SimulationMonitor* self, Ptr<RdmaQueuePair> qp
     const auto& r = e.control;
     fprintf(self->odin_output_,
             "%lu,%s,%s,%d,%u,%u,%u,%u,%lu,%u,%.17g,%u,%.17g,%.17g,%s,%lu,%lu,"
-            "%lu,%lu,%.17g,%.17g,%lu,%lu,%ld,%ld,%u,%lu,%u,%u,%lu,%lu,%lu\n",
+            "%lu,%lu,%.17g,%.17g,%lu,%lu,%ld,%ld,%u,%lu,%u,%u,%lu,%lu,%lu,%lu\n",
             Simulator::Now().GetNanoSeconds(), e.event, e.reason, qp->m_flow_id,
             Settings::ip_to_node_id(qp->sip), Settings::ip_to_node_id(qp->dip),
             e.nic, e.active, e.capacity, e.ack_seq, r.psi, r.tbo ? 1 : 0, r.beta,
@@ -333,7 +333,7 @@ void SimulationMonitor::OdinTrace(SimulationMonitor* self, Ptr<RdmaQueuePair> qp
             r.u_before, r.u_after, e.base_rtt_ns, e.window,
             e.next_before_ns, e.next_after_ns, e.last_packet_bytes, e.inflight_bytes,
             e.sample_hop, e.sample_queue_bytes, e.sample_dt_ns,
-            e.sample_delta_bytes, e.sample_line_bps);
+            e.sample_delta_bytes, e.sample_line_bps, e.sample_time_mod_ns);
 }
 
 void SimulationMonitor::StartCnpMonitoring(Ptr<RdmaHw> hardware) {

@@ -25,6 +25,11 @@ bool NativeResourceMonitor::Open() {
         if (!mechanism_) { Close(); return false; }
         fprintf(mechanism_, "time_ns,event,flow_id,src,dst,sport,dport,seq,wire_bytes,service_payload_bytes,calculated_bps,alpha,cnp_count,last_cnp_ns,snd_nxt,snd_una,pg3_paused\n");
     }
+    if (config_.monitoring.native_group_service_log) {
+        group_service_ = fopen((config_.io.native_resource_output_file + ".group_service.csv").c_str(), "w");
+        if (!group_service_) { Close(); return false; }
+        fprintf(group_service_, "time_ns,direction,node,interface,src,dst,pg,packets,payload_bytes,wire_bytes,first_ns,last_ns\n");
+    }
     fprintf(resources_, "time_ns,node,kind,interface,established_qps,ever_used_qps,"
             "unsent_qps,unfinished_qps,unfinished_peers,serviced_qps_in_window,"
             "payload_attempt_bytes,tx_started_wire_bytes,tx_reserved_busy_ns,"
@@ -41,7 +46,39 @@ void NativeResourceMonitor::ConnectDevice(Ptr<QbbNetDevice> device) {
     device->TraceConnectWithoutContext("PfcState", MakeBoundCallback(&NativeResourceMonitor::Pause, this, device));
     if (device->GetNode()->GetNodeType() == 0) {
         device->TraceConnectWithoutContext("PhyTxBegin", MakeBoundCallback(&NativeResourceMonitor::Tx, this, device));
+    } else if (config_.monitoring.native_group_service_log) {
+        device->TraceConnectWithoutContext("MacRx", MakeBoundCallback(&NativeResourceMonitor::GroupRx, this, device));
+        device->TraceConnectWithoutContext("PhyTxBegin", MakeBoundCallback(&NativeResourceMonitor::GroupTx, this, device));
     }
+}
+
+void NativeResourceMonitor::GroupRx(NativeResourceMonitor* self, Ptr<QbbNetDevice> device,
+                                    Ptr<const Packet> packet) {
+    self->GroupPacket(device, packet, 0);
+}
+
+void NativeResourceMonitor::GroupTx(NativeResourceMonitor* self, Ptr<QbbNetDevice> device,
+                                    Ptr<const Packet> packet) {
+    self->GroupPacket(device, packet, 1);
+}
+
+void NativeResourceMonitor::GroupPacket(Ptr<QbbNetDevice> device, Ptr<const Packet> packet,
+                                        uint32_t direction) {
+    CustomHeader ch(CustomHeader::L2_Header | CustomHeader::L3_Header | CustomHeader::L4_Header);
+    packet->PeekHeader(ch);
+    if (ch.l3Prot != 0x11) return;
+    uint32_t header = CustomHeader::GetStaticWholeHeaderSize();
+    NS_ABORT_MSG_IF(packet->GetSize() < header, "invalid grouped data packet size");
+    GroupKey key(direction, device->GetNode()->GetId(), device->GetIfIndex(),
+                 Settings::ip_to_node_id(Ipv4Address(ch.sip)),
+                 Settings::ip_to_node_id(Ipv4Address(ch.dip)), ch.udp.pg);
+    GroupState& group = groups_[key];
+    uint64_t now = Simulator::Now().GetNanoSeconds();
+    if (!group.packets) group.first_ns = now;
+    group.last_ns = now;
+    ++group.packets;
+    group.wire += packet->GetSize();
+    group.payload += packet->GetSize() - header;
 }
 
 void NativeResourceMonitor::ConnectDriver(Ptr<RdmaDriver> driver) {
@@ -151,6 +188,16 @@ void NativeResourceMonitor::Sample() {
     if (sampled_ && now == last_sample_ns_) {
         return;
     }
+    if (group_service_) {
+        for (const auto& item : groups_) {
+            const GroupKey& k = item.first;
+            const GroupState& g = item.second;
+            fprintf(group_service_, "%lu,%s,%u,%u,%u,%u,%u,%lu,%lu,%lu,%lu,%lu\n",
+                    now, std::get<0>(k) ? "tx" : "rx", std::get<1>(k), std::get<2>(k),
+                    std::get<3>(k), std::get<4>(k), std::get<5>(k),
+                    g.packets, g.payload, g.wire, g.first_ns, g.last_ns);
+        }
+    }
     for (uint32_t i = 0; i < state_.nodes.GetN(); ++i) {
         Ptr<Node> node = state_.nodes.Get(i);
         bool host = node->GetNodeType() == 0;
@@ -206,7 +253,7 @@ void NativeResourceMonitor::Close() {
             if (entry.second.paused) WritePause(entry.first, entry.second, true);
         }
     }
-    for (FILE** file : {&resources_, &qp_events_, &pfc_, &mechanism_}) {
+    for (FILE** file : {&resources_, &qp_events_, &pfc_, &mechanism_, &group_service_}) {
         if (*file) {
             fclose(*file);
             *file = NULL;

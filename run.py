@@ -103,6 +103,7 @@ HOST_SENSING_WARMUP_US {host_sensing_warmup_us}
 HOST_SENSING_MIN_BASELINE_SAMPLES {host_sensing_min_baseline_samples}
 NATIVE_RESOURCE_LOG {native_resource_log}
 NATIVE_QP_MECHANISM_LOG {native_qp_mechanism_log}
+NATIVE_GROUP_SERVICE_LOG {native_group_service_log}
 CONWEAVE_CAUSAL_TRACE {conweave_causal_trace}
 CONWEAVE_CAUSAL_TRACE_OUTPUT_FILE mix/output/{id}/{id}_out_conweave_causal_trace.csv
 MONITOR_UNTIL_COMPLETE {monitor_until_complete}
@@ -579,6 +580,8 @@ def main():
     parser.add_argument('--host_sensing_min_baseline_samples',
                         dest='host_sensing_min_baseline_samples', type=int, default=20)
     parser.add_argument('--native_qp_mechanism_log', type=int, choices=(0, 1), default=0)
+    parser.add_argument('--native-group-service-log', type=int, choices=(0, 1), default=0,
+                        help='Optional cumulative switch arrival/service counters by source and destination')
     parser.add_argument('--conweave_causal_trace', type=int, choices=(0, 1), default=0,
                         help='opt-in full cross-ToR packet/VOQ causal trace (large output; default off)')
     parser.add_argument('--native_resource_log', type=int, choices=(0, 1), default=0,
@@ -730,6 +733,8 @@ def main():
         raise Exception("CONFIG ERROR : native diagnostics require fecmp, conga, letflow, or conweave")
     if args.native_qp_mechanism_log and not args.native_resource_log:
         raise ValueError('native QP mechanism logging requires --native_resource_log 1')
+    if args.native_group_service_log and not args.native_resource_log:
+        raise ValueError('group service logging requires --native_resource_log 1')
     if args.conweave_causal_trace and (args.lb != 'conweave' or args.v5_qp_pool or
                                       args.v5_nsub != 1 or args.v5_chunk_bytes):
         raise ValueError('ConWeave causal trace requires native ConWeave without v5 pool/chunks')
@@ -1059,6 +1064,7 @@ def main():
                                         host_sensing_min_baseline_samples=args.host_sensing_min_baseline_samples,
                                         native_resource_log=args.native_resource_log,
                                         native_qp_mechanism_log=args.native_qp_mechanism_log,
+                                        native_group_service_log=args.native_group_service_log,
                                         conweave_causal_trace=args.conweave_causal_trace,
                                         monitor_until_complete=args.monitor_until_complete,
                                         native_diag_log=args.native_diag_log,
@@ -1160,6 +1166,7 @@ def main():
             "host_sensing_min_baseline_samples": args.host_sensing_min_baseline_samples,
             "native_resource_log": args.native_resource_log,
             "native_qp_mechanism_log": args.native_qp_mechanism_log,
+            "native_group_service_log": args.native_group_service_log,
             "conweave_causal_trace": args.conweave_causal_trace,
             "monitor_until_complete": args.monitor_until_complete,
             "sw_monitoring_interval_ns": args.sw_monitoring_interval,
