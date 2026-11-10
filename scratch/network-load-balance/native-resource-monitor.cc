@@ -90,7 +90,13 @@ void NativeResourceMonitor::Tx(NativeResourceMonitor* self, Ptr<QbbNetDevice> de
     bool has_tag = packet->PeekPacketTag(tag);
     NS_ABORT_MSG_IF(!has_tag, "native data packet lacks flow ID");
     auto found = self->qps_.find(tag.GetId());
-    NS_ASSERT_MSG(found != self->qps_.end(), "NIC service precedes QP registration");
+    NS_ABORT_MSG_IF(found == self->qps_.end(), "NIC service precedes QP registration");
+    Ptr<RdmaQueuePair> qp = found->second.qp;
+    NS_ABORT_MSG_IF(qp->sip.Get() != ch.sip || qp->dip.Get() != ch.dip ||
+                    qp->sport != ch.udp.sport || qp->dport != ch.udp.dport ||
+                    qp->m_pg != ch.udp.pg ||
+                    Settings::ip_to_node_id(qp->sip) != device->GetNode()->GetId(),
+                    "Native flow-ID tag does not match transport identity; check tag serialization");
     uint32_t node = device->GetNode()->GetId();
     self->serviced_[node].insert(tag.GetId());
     uint32_t header = CustomHeader::GetStaticWholeHeaderSize();

@@ -40,14 +40,16 @@ namespace ns3 {
 	void
 		FlowIDNUMTag::Serialize(TagBuffer i) const
 	{
-		i.WriteU16(flow_stat);
+		// flow_stat is int32_t and the advertised tag size reserves four bytes.
+		// Writing only 16 bits aliases flow IDs once a run exceeds 65536 QPs.
+		i.WriteU32(static_cast<uint32_t>(flow_stat));
 		i.WriteU32(flow_size);
 	}
 
 	void
 		FlowIDNUMTag::Deserialize(TagBuffer i)
 	{
-		flow_stat = i.ReadU16();
+		flow_stat = static_cast<int32_t>(i.ReadU32());
 		flow_size = i.ReadU32();
 	}
 
