@@ -14,6 +14,7 @@
 
 namespace nlb {
 
+class HostResourceLb;
 class SimulationMonitor;
 
 class TrafficScheduler {
@@ -21,6 +22,7 @@ class TrafficScheduler {
     TrafficScheduler(const ExperimentConfig& config, SimulationState& state,
                      SimulationMonitor& monitor);
 
+    void SetHostResourceLb(HostResourceLb* hrlb) { hrlb_ = hrlb; }
     bool LoadFlowFile();
     void InitializePorts();
     void Start();
@@ -146,6 +148,7 @@ class TrafficScheduler {
     const ExperimentConfig& config_;
     SimulationState& state_;
     SimulationMonitor& monitor_;
+    HostResourceLb* hrlb_ = nullptr;
     std::ifstream flow_file_;
     FlowInput flow_input_;
     uint32_t flow_count_ = 0;

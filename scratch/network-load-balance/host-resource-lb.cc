@@ -1,0 +1,609 @@
+#include "host-resource-lb.h"
+
+#include <ns3/custom-header.h>
+#include <ns3/rdma-hw.h>
+#include <ns3/settings.h>
+#include <ns3/simulator.h>
+#include <ns3/switch-node.h>
+
+#include <algorithm>
+#include <cmath>
+#include <fstream>
+#include <iomanip>
+#include <iostream>
+#include <limits>
+#include <sstream>
+
+namespace nlb {
+
+using namespace ns3;
+
+HostResourceLb::HostResourceLb(const ExperimentConfig& config, SimulationState& state)
+    : config_(config), state_(state) {}
+
+HostResourceLb::~HostResourceLb() { Close(); }
+
+bool HostResourceLb::LoadTupleSpec() {
+    if (!IsEnabled()) return true;
+    if (config_.io.hrlb_tuple_file.empty()) {
+        std::cerr << "Error: HRLB_ENABLE=1 requires HRLB_TUPLE_FILE\n";
+        return false;
+    }
+    std::ifstream in(config_.io.hrlb_tuple_file.c_str());
+    if (!in.is_open()) {
+        std::cerr << "Error: cannot open HRLB_TUPLE_FILE " << config_.io.hrlb_tuple_file << '\n';
+        return false;
+    }
+    uint32_t n_records = 0;
+    if (!(in >> n_records) || n_records == 0) {
+        std::cerr << "Error: malformed HRLB_TUPLE_FILE header\n";
+        return false;
+    }
+    bg_specs_.clear();
+    target_flow_to_msg_.clear();
+    tg_specs_by_msg_.clear();
+
+    for (uint32_t i = 0; i < n_records; ++i) {
+        std::string kind;
+        if (!(in >> kind)) {
+            std::cerr << "Error: truncated HRLB_TUPLE_FILE at record " << i << '\n';
+            return false;
+        }
+        if (kind == "BG") {
+            BgTupleSpec spec;
+            uint32_t nhops = 0;
+            if (!(in >> spec.flow_id >> spec.src >> spec.dst >> spec.pg >> spec.sport >>
+                  spec.dport >> nhops) ||
+                nhops < 3) {
+                std::cerr << "Error: malformed BG tuple record\n";
+                return false;
+            }
+            spec.expected_hops.resize(nhops);
+            for (uint32_t h = 0; h < nhops; ++h) {
+                if (!(in >> spec.expected_hops[h])) return false;
+            }
+            if (!bg_specs_.emplace(spec.flow_id, spec).second) {
+                std::cerr << "Error: duplicate BG flow_id " << spec.flow_id << '\n';
+                return false;
+            }
+        } else if (kind == "TG") {
+            TgTupleSpec spec;
+            uint32_t nhops = 0;
+            if (!(in >> spec.flow_id >> spec.message_id >> spec.lane >> spec.src >> spec.dst >>
+                  spec.pg >> spec.sport >> spec.dport >> spec.path_id >> nhops) ||
+                nhops < 3 || spec.lane >= config_.hrlb.k) {
+                std::cerr << "Error: malformed TG tuple record\n";
+                return false;
+            }
+            spec.expected_hops.resize(nhops);
+            for (uint32_t h = 0; h < nhops; ++h) {
+                if (!(in >> spec.expected_hops[h])) return false;
+            }
+            auto it = target_flow_to_msg_.find(spec.flow_id);
+            if (it != target_flow_to_msg_.end() && it->second != spec.message_id) {
+                std::cerr << "Error: inconsistent message_id for flow_id " << spec.flow_id << '\n';
+                return false;
+            }
+            target_flow_to_msg_[spec.flow_id] = spec.message_id;
+            tg_specs_by_msg_[spec.message_id].push_back(spec);
+        } else {
+            std::cerr << "Error: unknown tuple record type " << kind << '\n';
+            return false;
+        }
+    }
+    for (auto& kv : tg_specs_by_msg_) {
+        auto& vec = kv.second;
+        std::sort(vec.begin(), vec.end(),
+                  [](const TgTupleSpec& a, const TgTupleSpec& b) { return a.lane < b.lane; });
+        if (vec.size() != config_.hrlb.k) {
+            std::cerr << "Error: message " << kv.first << " does not have K=" << config_.hrlb.k
+                      << " lanes\n";
+            return false;
+        }
+        for (uint32_t l = 0; l < config_.hrlb.k; ++l) {
+            if (vec[l].lane != l || vec[l].flow_id != vec[0].flow_id ||
+                vec[l].src != vec[0].src || vec[l].dst != vec[0].dst || vec[l].pg != vec[0].pg) {
+                std::cerr << "Error: invalid lane specs for message " << kv.first << '\n';
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+void HostResourceLb::VerifyTuplePath(uint32_t src, uint32_t dst, uint16_t sport, uint16_t dport,
+                                     uint16_t pg, const std::vector<uint32_t>& expected_hops,
+                                     std::vector<RdmaHw::OdinResourceKey>* out_resources,
+                                     ExpectedFlowPath* out_flow_path) const {
+    NS_ABORT_MSG_IF(expected_hops.size() < 3 || expected_hops.front() != src ||
+                        expected_hops.back() != dst,
+                    "invalid expected hop sequence endpoints");
+    uint32_t sip = state_.server_addresses[src].Get();
+    uint32_t dip = state_.server_addresses[dst].Get();
+    NS_ABORT_MSG_IF(state_.nodes.Get(src)->GetNodeType() != 0 ||
+                        state_.nodes.Get(dst)->GetNodeType() != 0,
+                    "path endpoints must be hosts");
+    Ptr<Node> first_sw = state_.nodes.Get(expected_hops[1]);
+    NS_ABORT_MSG_IF(first_sw->GetNodeType() != 1 ||
+                        state_.neighbor_interfaces.at(state_.nodes.Get(src)).find(first_sw) ==
+                            state_.neighbor_interfaces.at(state_.nodes.Get(src)).end(),
+                    "first hop is not an attached switch");
+
+    for (size_t h = 1; h + 1 < expected_hops.size(); ++h) {
+        uint32_t sw_id = expected_hops[h];
+        uint32_t next_id = expected_hops[h + 1];
+        Ptr<SwitchNode> sw = DynamicCast<SwitchNode>(state_.nodes.Get(sw_id));
+        Ptr<Node> next_node = state_.nodes.Get(next_id);
+        NS_ABORT_MSG_IF(!sw || sw->GetNodeType() != 1, "expected switch hop is not a switch");
+        auto it = state_.neighbor_interfaces.at(state_.nodes.Get(sw_id)).find(next_node);
+        NS_ABORT_MSG_IF(it == state_.neighbor_interfaces.at(state_.nodes.Get(sw_id)).end() ||
+                            !it->second.up,
+                        "expected link is missing or down");
+        uint32_t expected_port = it->second.idx;
+        int actual_port = sw->PredictEcmpOutDev(sip, dip, sport, dport);
+        NS_ABORT_MSG_IF(actual_port < 0 || static_cast<uint32_t>(actual_port) != expected_port,
+                        "frozen tuple ECMP hop verification failed: switch "
+                            << sw_id << " predicted port " << actual_port << " != expected "
+                            << expected_port << " (sport=" << sport << ", dport=" << dport << ")");
+        if (out_resources) {
+            out_resources->push_back(RdmaHw::OdinResourceKey{sw_id, expected_port});
+        }
+        if (out_flow_path) {
+            out_flow_path->allowed_switch_ports.insert(std::make_pair(sw_id, expected_port));
+        }
+    }
+    (void)pg;
+}
+
+bool HostResourceLb::Initialize() {
+    if (!IsEnabled()) return true;
+    monitored_resources_.clear();
+    expected_flow_paths_.clear();
+    connected_hosts_.clear();
+
+    for (const auto& kv : bg_specs_) {
+        const BgTupleSpec& bg = kv.second;
+        ExpectedFlowPath flow_path;
+        flow_path.is_target = false;
+        VerifyTuplePath(bg.src, bg.dst, bg.sport, bg.dport, static_cast<uint16_t>(bg.pg),
+                        bg.expected_hops, nullptr, &flow_path);
+        FiveTupleKey key(state_.server_addresses[bg.src].Get(),
+                         state_.server_addresses[bg.dst].Get(), bg.sport, bg.dport,
+                         static_cast<uint16_t>(bg.pg));
+        NS_ABORT_MSG_IF(!expected_flow_paths_.emplace(key, flow_path).second,
+                        "duplicate frozen 5-tuple");
+    }
+
+    for (auto& kv : tg_specs_by_msg_) {
+        for (TgTupleSpec& tg : kv.second) {
+            ExpectedFlowPath flow_path;
+            flow_path.is_target = true;
+            tg.resources.clear();
+            VerifyTuplePath(tg.src, tg.dst, tg.sport, tg.dport, static_cast<uint16_t>(tg.pg),
+                            tg.expected_hops, &tg.resources, &flow_path);
+            for (const auto& res : tg.resources) {
+                monitored_resources_.insert(res);
+            }
+            FiveTupleKey key(state_.server_addresses[tg.src].Get(),
+                             state_.server_addresses[tg.dst].Get(), tg.sport, tg.dport,
+                             static_cast<uint16_t>(tg.pg));
+            NS_ABORT_MSG_IF(!expected_flow_paths_.emplace(key, flow_path).second,
+                            "duplicate frozen target 5-tuple");
+
+            Ptr<RdmaDriver> driver = state_.nodes.Get(tg.src)->GetObject<RdmaDriver>();
+            uint64_t qp_key = RdmaHw::GetQpKey(state_.server_addresses[tg.dst].Get(), tg.sport,
+                                               tg.dport, static_cast<uint16_t>(tg.pg));
+            driver->m_rdma->RegisterOdinResourcePath(qp_key, tg.path_id,
+                                                     config_.hrlb.mapping_version, tg.resources);
+            if (connected_hosts_.insert(tg.src).second) {
+                driver->TraceConnectWithoutContext(
+                    "WqeEvent", MakeBoundCallback(&HostResourceLb::WqeEventCallback, this));
+                driver->m_rdma->m_odinResourceDeliveredCallback =
+                    MakeCallback(&HostResourceLb::OnResourceFrameDelivered, this);
+            }
+        }
+    }
+
+    // Connect runtime hop verification to all switch egress devices.
+    for (uint32_t i = 0; i < state_.nodes.GetN(); ++i) {
+        Ptr<Node> node = state_.nodes.Get(i);
+        if (node->GetNodeType() != 1) continue;
+        for (uint32_t j = 1; j < node->GetNDevices(); ++j) {
+            Ptr<QbbNetDevice> dev = DynamicCast<QbbNetDevice>(node->GetDevice(j));
+            if (dev) {
+                dev->TraceConnectWithoutContext(
+                    "PhyTxBegin", MakeBoundCallback(&HostResourceLb::SwitchTxCallback, this, dev));
+            }
+        }
+    }
+
+    message_output_ = fopen(config_.io.hrlb_message_output_file.c_str(), "w");
+    if (!message_output_) return false;
+    fprintf(message_output_,
+            "message_id,flow_id,src,dst,pg,bytes,total_chunks,start_ns,finish_ns,completion_ns\n");
+    fflush(message_output_);
+
+    if (config_.hrlb.decision_log) {
+        decision_output_ = fopen(config_.io.hrlb_decision_output_file.c_str(), "w");
+        if (!decision_output_) return false;
+        fprintf(decision_output_,
+                "time_ns,schedule_seq,epoch,trigger,event,message_id,chunk_id,offset,bytes,"
+                "nominal_lane,chosen_lane,is_redirect,source_fresh,source_score,target_fresh,"
+                "target_score,lane_scores,lane_fresh,resource_versions,resource_ages_ns,"
+                "slots_before,slots_after,cursor_before,cursor_after,reason\n");
+        fflush(decision_output_);
+    }
+    return true;
+}
+
+void HostResourceLb::Close() {
+    if (decision_output_) {
+        fclose(decision_output_);
+        decision_output_ = NULL;
+    }
+    if (message_output_) {
+        fclose(message_output_);
+        message_output_ = NULL;
+    }
+}
+
+bool HostResourceLb::IsTargetFlow(uint32_t flow_id) const {
+    return IsEnabled() && target_flow_to_msg_.count(flow_id) > 0;
+}
+
+bool HostResourceLb::GetBackgroundTuple(uint32_t flow_id, uint16_t* sport, uint16_t* dport) const {
+    auto it = bg_specs_.find(flow_id);
+    if (it == bg_specs_.end()) return false;
+    *sport = it->second.sport;
+    *dport = it->second.dport;
+    return true;
+}
+
+uint64_t HostResourceLb::TargetChunkCount(uint32_t bytes) const {
+    return (static_cast<uint64_t>(bytes) + config_.hrlb.chunk_bytes - 1) / config_.hrlb.chunk_bytes;
+}
+
+void HostResourceLb::SwitchTxCallback(HostResourceLb* self, Ptr<QbbNetDevice> device,
+                                      Ptr<const Packet> packet) {
+    CustomHeader ch(CustomHeader::L2_Header | CustomHeader::L3_Header | CustomHeader::L4_Header);
+    packet->PeekHeader(ch);
+    if (ch.l3Prot != 0x11) return;
+    FiveTupleKey key(ch.sip, ch.dip, ch.udp.sport, ch.udp.dport, ch.udp.pg);
+    auto it = self->expected_flow_paths_.find(key);
+    NS_ABORT_MSG_IF(it == self->expected_flow_paths_.end(),
+                    "unregistered data packet tuple observed at switch");
+    std::pair<uint32_t, uint32_t> sw_port(device->GetNode()->GetId(), device->GetIfIndex());
+    NS_ABORT_MSG_IF(!it->second.allowed_switch_ports.count(sw_port),
+                    "data packet traversed unexpected switch/port: sw="
+                        << sw_port.first << " port=" << sw_port.second
+                        << " sport=" << ch.udp.sport << " dport=" << ch.udp.dport);
+}
+
+void HostResourceLb::AddPendingTargetMessage(uint32_t flow_id, uint32_t src, uint32_t dst,
+                                             uint32_t pg, uint64_t bytes, double start_s) {
+    auto map_it = target_flow_to_msg_.find(flow_id);
+    NS_ABORT_MSG_IF(map_it == target_flow_to_msg_.end(), "missing target message mapping");
+    uint32_t msg_id = map_it->second;
+    const auto& lane_specs = tg_specs_by_msg_.at(msg_id);
+    NS_ABORT_MSG_IF(lane_specs[0].src != src || lane_specs[0].dst != dst || lane_specs[0].pg != pg,
+                    "target flow endpoints mismatch tuple spec");
+
+    MessageState msg;
+    msg.message_id = msg_id;
+    msg.flow_id = flow_id;
+    msg.src = src;
+    msg.dst = dst;
+    msg.pg = pg;
+    msg.total_bytes = bytes;
+    msg.start_ns = Simulator::Now().GetNanoSeconds();
+    (void)start_s;
+    msg.target_cursor = msg_id % config_.hrlb.k;
+
+    uint64_t offset = 0;
+    uint32_t chunk_id = 0;
+    while (offset < bytes) {
+        uint32_t len = static_cast<uint32_t>(
+            std::min<uint64_t>(config_.hrlb.chunk_bytes, bytes - offset));
+        msg.pending_chunks.push_back(PendingChunk{chunk_id, offset, len});
+        offset += len;
+        ++chunk_id;
+    }
+    msg.total_chunks = chunk_id;
+    NS_ABORT_MSG_IF(msg.total_chunks < config_.hrlb.k,
+                    "target message has fewer chunks than K bootstrap lanes");
+
+    msg.lanes.resize(config_.hrlb.k);
+    for (uint32_t l = 0; l < config_.hrlb.k; ++l) {
+        msg.lanes[l].spec = lane_specs[l];
+        msg.lanes[l].qp_key = RdmaHw::GetQpKey(state_.server_addresses[dst].Get(),
+                                               lane_specs[l].sport, lane_specs[l].dport,
+                                               static_cast<uint16_t>(pg));
+    }
+
+    NS_ABORT_MSG_IF(!messages_.emplace(msg_id, std::move(msg)).second, "duplicate message_id");
+    pending_start_msgs_.push_back(msg_id);
+}
+
+void HostResourceLb::StartAddedMessages() {
+    if (pending_start_msgs_.empty()) return;
+    std::sort(pending_start_msgs_.begin(), pending_start_msgs_.end());
+    std::map<uint32_t, std::vector<Ptr<RdmaQueuePair>>> created_by_host;
+
+    for (uint32_t msg_id : pending_start_msgs_) {
+        MessageState& msg = messages_.at(msg_id);
+        active_message_ids_.push_back(msg_id);
+        uint32_t window = config_.cc.has_win
+                              ? (config_.cc.global_t == 1
+                                     ? state_.max_bdp
+                                     : state_.pair_bdp[state_.nodes.Get(msg.src)]
+                                                      [state_.nodes.Get(msg.dst)])
+                              : 0;
+        uint64_t base_rtt = config_.cc.global_t == 1
+                                ? state_.max_rtt
+                                : state_.pair_rtt[state_.nodes.Get(msg.src)]
+                                                 [state_.nodes.Get(msg.dst)];
+        Ptr<RdmaDriver> driver = state_.nodes.Get(msg.src)->GetObject<RdmaDriver>();
+
+        std::vector<bool> fresh(config_.hrlb.k, false);
+        std::vector<double> scores(config_.hrlb.k, 0.0);
+        std::vector<uint64_t> versions(config_.hrlb.k, 0);
+        std::vector<uint64_t> ages(config_.hrlb.k, 0);
+        for (uint32_t l = 0; l < config_.hrlb.k; ++l) {
+            bool tbo = false;
+            const char* r = nullptr;
+            fresh[l] = driver->m_rdma->QueryOdinPathScore(
+                msg.lanes[l].qp_key, base_rtt, &scores[l], &tbo, &ages[l], &versions[l], nullptr,
+                &r);
+        }
+
+        // Submit first K real chunks, one per lane, without notifying NIC yet.
+        for (uint32_t c = 0; c < config_.hrlb.k; ++c) {
+            PendingChunk chunk = msg.pending_chunks.front();
+            msg.pending_chunks.pop_front();
+            uint32_t lane = (msg.message_id + chunk.chunk_id) % config_.hrlb.k;
+            LaneState& ls = msg.lanes[lane];
+            uint32_t slots_before = ls.outstanding_wqes;
+            Ptr<RdmaQueuePair> qp = driver->AppendPersistentWqe(
+                static_cast<uint16_t>(msg.pg), state_.server_addresses[msg.src],
+                state_.server_addresses[msg.dst], ls.spec.sport, ls.spec.dport, window, base_rtt,
+                static_cast<int32_t>(msg.message_id), chunk.chunk_id, chunk.bytes, lane,
+                RdmaQueuePair::V5_DATA, false);
+            ls.qp = qp;
+            ls.outstanding_wqes += 1;
+            ls.scheduled_wqes += 1;
+            created_by_host[msg.src].push_back(qp);
+            LogDecision(0, "message_start", "bootstrap", msg, chunk, lane, lane, false, fresh,
+                        scores, versions, ages, slots_before, ls.outstanding_wqes,
+                        msg.target_cursor, msg.target_cursor, "bootstrap");
+        }
+        if (msg.pending_chunks.empty() && !msg.sealed) {
+            SealMessage(msg);
+        }
+    }
+    std::sort(active_message_ids_.begin(), active_message_ids_.end());
+    pending_start_msgs_.clear();
+
+    for (const auto& kv : created_by_host) {
+        Ptr<RdmaDriver> driver = state_.nodes.Get(kv.first)->GetObject<RdmaDriver>();
+        driver->NotifyPersistentQps(kv.second);
+    }
+
+    RunSchedule("message_start");
+}
+
+void HostResourceLb::WqeEventCallback(HostResourceLb* self, Ptr<RdmaQueuePair> qp, uint32_t event,
+                                      RdmaQueuePair::WqeBoundary boundary) {
+    if (event != RdmaHw::WQE_COMPLETE || qp->m_v5_traffic_class != RdmaQueuePair::V5_DATA) {
+        return;
+    }
+    self->OnWqeComplete(qp, boundary);
+}
+
+void HostResourceLb::OnWqeComplete(Ptr<RdmaQueuePair> qp, RdmaQueuePair::WqeBoundary boundary) {
+    auto it = messages_.find(boundary.app_id);
+    if (it == messages_.end()) return;
+    MessageState& msg = it->second;
+    uint32_t lane = qp->m_v5_lane;
+    NS_ABORT_MSG_IF(lane >= msg.lanes.size() || msg.lanes[lane].outstanding_wqes == 0,
+                    "WQE completion underflow");
+    msg.lanes[lane].outstanding_wqes -= 1;
+    msg.completed_chunks += 1;
+    msg.completed_bytes += boundary.bytes;
+    if (msg.completed_chunks == msg.total_chunks) {
+        NS_ABORT_MSG_IF(msg.completed_bytes != msg.total_bytes,
+                        "message completed byte count mismatch");
+        msg.finish_ns = Simulator::Now().GetNanoSeconds();
+        if (message_output_) {
+            fprintf(message_output_, "%u,%u,%u,%u,%u,%lu,%u,%lu,%lu,%lu\n",
+                    msg.message_id, msg.flow_id, msg.src, msg.dst, msg.pg, msg.total_bytes,
+                    msg.total_chunks, msg.start_ns, msg.finish_ns, msg.finish_ns - msg.start_ns);
+            fflush(message_output_);
+        }
+    }
+    if (!post_ack_scheduled_) {
+        post_ack_scheduled_ = true;
+        Simulator::ScheduleNow(&HostResourceLb::OnPostAck, this);
+    }
+}
+
+void HostResourceLb::OnPostAck() {
+    post_ack_scheduled_ = false;
+    RunSchedule("wqe_complete");
+}
+
+void HostResourceLb::OnResourceFrameDelivered(uint64_t epoch) {
+    latest_delivered_epoch_ = epoch;
+    RunSchedule("resource_frame");
+}
+
+void HostResourceLb::RunSchedule(const char* trigger) {
+    if (active_message_ids_.empty()) return;
+    uint64_t seq = ++schedule_seq_;
+    bool any_progress = true;
+    while (any_progress) {
+        any_progress = false;
+        size_t m = active_message_ids_.size();
+        size_t start = msg_rr_cursor_ % m;
+        size_t next_cursor = msg_rr_cursor_;
+        for (size_t step = 0; step < m; ++step) {
+            size_t idx = (start + step) % m;
+            MessageState& msg = messages_.at(active_message_ids_[idx]);
+            if (msg.pending_chunks.empty()) continue;
+            if (TryCommitOneChunk(msg, trigger, seq)) {
+                any_progress = true;
+                next_cursor = (idx + 1) % m;
+                if (msg.pending_chunks.empty() && !msg.sealed) {
+                    SealMessage(msg);
+                }
+            }
+        }
+        msg_rr_cursor_ = next_cursor;
+    }
+}
+
+bool HostResourceLb::TryCommitOneChunk(MessageState& msg, const char* trigger, uint64_t seq) {
+    uint32_t k = config_.hrlb.k;
+    uint32_t d = config_.hrlb.depth;
+    Ptr<RdmaDriver> driver = state_.nodes.Get(msg.src)->GetObject<RdmaDriver>();
+    uint64_t base_rtt = config_.cc.global_t == 1
+                            ? state_.max_rtt
+                            : state_.pair_rtt[state_.nodes.Get(msg.src)][state_.nodes.Get(msg.dst)];
+    uint32_t window = config_.cc.has_win
+                          ? (config_.cc.global_t == 1
+                                 ? state_.max_bdp
+                                 : state_.pair_bdp[state_.nodes.Get(msg.src)]
+                                                  [state_.nodes.Get(msg.dst)])
+                          : 0;
+
+    std::vector<bool> fresh(k, false);
+    std::vector<double> scores(k, 0.0);
+    std::vector<uint64_t> versions(k, 0);
+    std::vector<uint64_t> ages(k, 0);
+    for (uint32_t l = 0; l < k; ++l) {
+        bool tbo = false;
+        const char* r = nullptr;
+        fresh[l] = driver->m_rdma->QueryOdinPathScore(msg.lanes[l].qp_key, base_rtt, &scores[l],
+                                                      &tbo, &ages[l], &versions[l], nullptr, &r);
+    }
+
+    bool redirect_active = (config_.hrlb.policy == "redirect") && (config_.hrlb.redirect != 0);
+    for (auto it = msg.pending_chunks.begin(); it != msg.pending_chunks.end(); ++it) {
+        uint32_t nominal = (msg.message_id + it->chunk_id) % k;
+        uint32_t chosen = nominal;
+        bool is_redirect = false;
+        const char* reason = "nominal";
+
+        if (redirect_active) {
+            if (!fresh[nominal]) {
+                reason = "source_unknown_fallback";
+            } else if (scores[nominal] > config_.hrlb.theta) {
+                uint32_t best_cand = k;
+                double best_score = std::numeric_limits<double>::infinity();
+                bool any_below_theta = false;
+                bool any_unknown = false;
+                for (uint32_t offset = 0; offset < k; ++offset) {
+                    uint32_t cand = (msg.target_cursor + offset) % k;
+                    if (!fresh[cand]) {
+                        any_unknown = true;
+                        continue;
+                    }
+                    if (scores[cand] < config_.hrlb.theta) {
+                        any_below_theta = true;
+                        if (msg.lanes[cand].outstanding_wqes < d && scores[cand] < best_score) {
+                            best_score = scores[cand];
+                            best_cand = cand;
+                        }
+                    }
+                }
+                if (best_cand < k) {
+                    chosen = best_cand;
+                    is_redirect = (chosen != nominal);
+                    reason = "redirect_min_pressure";
+                } else if (any_below_theta) {
+                    reason = "target_slots_full_fallback";
+                } else if (any_unknown) {
+                    reason = "target_unknown_fallback";
+                } else {
+                    reason = "all_paths_high_fallback";
+                }
+            } else {
+                reason = "below_or_equal_theta";
+            }
+        }
+
+        if (msg.lanes[chosen].outstanding_wqes < d) {
+            PendingChunk chunk = *it;
+            msg.pending_chunks.erase(it);
+            LaneState& ls = msg.lanes[chosen];
+            uint32_t slots_before = ls.outstanding_wqes;
+            uint32_t cursor_before = msg.target_cursor;
+            driver->AppendPersistentWqe(
+                static_cast<uint16_t>(msg.pg), state_.server_addresses[msg.src],
+                state_.server_addresses[msg.dst], ls.spec.sport, ls.spec.dport, window, base_rtt,
+                static_cast<int32_t>(msg.message_id), chunk.chunk_id, chunk.bytes, chosen,
+                RdmaQueuePair::V5_DATA, true);
+            ls.outstanding_wqes += 1;
+            ls.scheduled_wqes += 1;
+            if (is_redirect) {
+                msg.target_cursor = (chosen + 1) % k;
+            }
+            LogDecision(seq, trigger, "commit", msg, chunk, nominal, chosen, is_redirect, fresh,
+                        scores, versions, ages, slots_before, ls.outstanding_wqes, cursor_before,
+                        msg.target_cursor, reason);
+            return true;
+        } else if (redirect_active && fresh[nominal] && scores[nominal] > config_.hrlb.theta) {
+            uint32_t slots = msg.lanes[chosen].outstanding_wqes;
+            LogDecision(seq, trigger, "blocked", msg, *it, nominal, chosen, false, fresh, scores,
+                        versions, ages, slots, slots, msg.target_cursor, msg.target_cursor, reason);
+        }
+    }
+    return false;
+}
+
+void HostResourceLb::SealMessage(MessageState& msg) {
+    msg.sealed = true;
+    Ptr<RdmaDriver> driver = state_.nodes.Get(msg.src)->GetObject<RdmaDriver>();
+    for (const auto& ls : msg.lanes) {
+        driver->SealPersistentQueuePair(state_.server_addresses[msg.dst].Get(), ls.spec.sport,
+                                        ls.spec.dport, static_cast<uint16_t>(msg.pg),
+                                        ls.scheduled_wqes);
+    }
+}
+
+void HostResourceLb::LogDecision(uint64_t seq, const char* trigger, const char* event,
+                                 const MessageState& msg, const PendingChunk& chunk,
+                                 uint32_t nominal, uint32_t chosen, bool is_redirect,
+                                 const std::vector<bool>& fresh, const std::vector<double>& scores,
+                                 const std::vector<uint64_t>& versions,
+                                 const std::vector<uint64_t>& ages, uint32_t slots_before,
+                                 uint32_t slots_after, uint32_t cursor_before,
+                                 uint32_t cursor_after, const char* reason) {
+    if (!decision_output_) return;
+    std::ostringstream s_scores, s_fresh, s_versions, s_ages;
+    s_scores << std::setprecision(17);
+    for (size_t i = 0; i < scores.size(); ++i) {
+        if (i > 0) {
+            s_scores << ';';
+            s_fresh << ';';
+            s_versions << ';';
+            s_ages << ';';
+        }
+        if (fresh[i]) s_scores << scores[i];
+        else s_scores << "nan";
+        s_fresh << (fresh[i] ? 1 : 0);
+        s_versions << versions[i];
+        s_ages << ages[i];
+    }
+    fprintf(decision_output_,
+            "%lu,%lu,%lu,%s,%s,%u,%u,%lu,%u,%u,%u,%u,%u,%.17g,%u,%.17g,%s,%s,%s,%s,%u,%u,%u,%u,%s\n",
+            Simulator::Now().GetNanoSeconds(), seq, latest_delivered_epoch_, trigger, event,
+            msg.message_id, chunk.chunk_id, chunk.offset, chunk.bytes, nominal, chosen,
+            is_redirect ? 1 : 0, fresh[nominal] ? 1 : 0,
+            fresh[nominal] ? scores[nominal] : std::numeric_limits<double>::quiet_NaN(),
+            fresh[chosen] ? 1 : 0,
+            fresh[chosen] ? scores[chosen] : std::numeric_limits<double>::quiet_NaN(),
+            s_scores.str().c_str(), s_fresh.str().c_str(), s_versions.str().c_str(),
+            s_ages.str().c_str(), slots_before, slots_after, cursor_before, cursor_after, reason);
+}
+
+}  // namespace nlb

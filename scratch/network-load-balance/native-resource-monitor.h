@@ -60,9 +60,10 @@ class NativeResourceMonitor {
 
     const ExperimentConfig& config_;
     SimulationState& state_;
-    std::map<int32_t, QpState> qps_;
+    using QpMapKey = std::pair<uint32_t, uint64_t>;
+    std::map<QpMapKey, QpState> qps_;
     std::map<uint32_t, std::vector<QpState*>> host_qps_;
-    std::map<uint32_t, std::set<int32_t>> serviced_;
+    std::map<uint32_t, std::set<uint64_t>> serviced_;
     std::map<uint32_t, uint64_t> payload_attempt_bytes_;
     std::map<PauseKey, PauseState> pauses_;
     FILE* mechanism_ = NULL;

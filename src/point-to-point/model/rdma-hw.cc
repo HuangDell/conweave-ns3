@@ -245,8 +245,9 @@ void RdmaHw::RegisterQueuePair(Ptr<RdmaQueuePair> qp, bool notify_nic) {
     }
 
     if (m_cc_mode == CC_MODE_ODIN) {
-        NS_ABORT_MSG_IF(qp->m_persistent || !qp->m_win || !qp->m_baseRtt ||
-                        !m_var_win || !m_rateBound, "Odin requires ordinary QPs, window and pacing");
+        NS_ABORT_MSG_IF((qp->m_persistent && !m_odinAllowPersistent) || !qp->m_win ||
+                            !qp->m_baseRtt || !m_var_win || !m_rateBound,
+                        "Odin requires ordinary QPs (or explicit persistent Odin), window and pacing");
         qp->lastPktSize = 0;
         qp->odin.nic = nic_idx;
         qp->odin.active = true;
@@ -270,7 +271,7 @@ void RdmaHw::AddQueuePair(uint64_t size, uint16_t pg, Ipv4Address sip, Ipv4Addre
 Ptr<RdmaQueuePair> RdmaHw::AppendPersistentWqe(
     uint16_t pg, Ipv4Address sip, Ipv4Address dip, uint16_t sport, uint16_t dport,
     uint32_t win, uint64_t baseRtt, int32_t app_id, uint32_t chunk_id, uint64_t bytes,
-    uint32_t lane, uint32_t traffic_class) {
+    uint32_t lane, uint32_t traffic_class, bool notify_nic) {
     uint64_t key = GetQpKey(dip.Get(), sport, dport, pg);
     Ptr<RdmaQueuePair> qp = GetQp(key);
     bool created = qp == NULL;
@@ -300,6 +301,17 @@ Ptr<RdmaQueuePair> RdmaHw::AppendPersistentWqe(
     } else {
         uint32_t nic_idx = GetNicIdxOfQp(qp);
         m_nic[nic_idx].qpGrp->ClearQpFinished(qp);
+        if (was_idle && m_cc_mode == CC_MODE_ODIN) {
+            NS_ABORT_MSG_IF(qp->odin.active, "idle persistent QP still active in Odin");
+            qp->odin.nic = nic_idx;
+            qp->odin.active = true;
+            DataRate nic_bps = m_nic[nic_idx].dev->GetDataRate();
+            m_nic[nic_idx].odin.Register(key, qp->m_rate.GetBitRate(), nic_bps.GetBitRate());
+            OdinEvent event;
+            event.event = "wake";
+            event.reason = "persistent_wake";
+            TraceOdin(qp, event);
+        }
         if (was_idle && !m_persistentQpEventCallback.IsNull()) {
             m_persistentQpEventCallback(qp, PERSISTENT_QP_WAKE);
         }
@@ -307,12 +319,27 @@ Ptr<RdmaQueuePair> RdmaHw::AppendPersistentWqe(
     if (!m_wqeEventCallback.IsNull()) {
         m_wqeEventCallback(qp, WQE_COMMIT, boundary);
     }
-    if (created) {
-        m_nic[GetNicIdxOfQp(qp)].dev->NewQp(qp);
-    } else {
-        m_nic[GetNicIdxOfQp(qp)].dev->TriggerTransmit();
+    if (notify_nic) {
+        if (created) {
+            m_nic[GetNicIdxOfQp(qp)].dev->NewQp(qp);
+        } else {
+            m_nic[GetNicIdxOfQp(qp)].dev->TriggerTransmit();
+        }
     }
     return qp;
+}
+
+void RdmaHw::NotifyPersistentQps(const std::vector<Ptr<RdmaQueuePair>>& qps) {
+    std::set<uint32_t> nics;
+    Time now = Simulator::Now();
+    for (Ptr<RdmaQueuePair> qp : qps) {
+        if (!qp) continue;
+        qp->m_nextAvail = now;
+        nics.insert(GetNicIdxOfQp(qp));
+    }
+    for (uint32_t nic_idx : nics) {
+        m_nic[nic_idx].dev->TriggerTransmit();
+    }
 }
 
 void RdmaHw::SealPersistentQueuePair(uint32_t dip, uint16_t sport, uint16_t dport,
@@ -869,6 +896,15 @@ void RdmaHw::CompletePersistentWqes(Ptr<RdmaQueuePair> qp) {
     }
     if (qp->IsPersistentIdle() && !qp->m_idle_reported) {
         qp->m_idle_reported = true;
+        if (m_cc_mode == CC_MODE_ODIN && qp->odin.active) {
+            m_nic[qp->odin.nic].odin.Remove(
+                GetQpKey(qp->dip.Get(), qp->sport, qp->dport, qp->m_pg));
+            qp->odin.active = false;
+            OdinEvent event;
+            event.event = "idle";
+            event.reason = "persistent_idle";
+            TraceOdin(qp, event);
+        }
         if (!m_persistentQpEventCallback.IsNull()) {
             m_persistentQpEventCallback(qp, PERSISTENT_QP_IDLE);
         }
@@ -876,12 +912,20 @@ void RdmaHw::CompletePersistentWqes(Ptr<RdmaQueuePair> qp) {
 }
 
 void RdmaHw::QpComplete(Ptr<RdmaQueuePair> qp) {
-    if (m_cc_mode == CC_MODE_ODIN && qp->odin.active) {
-        m_nic[qp->odin.nic].odin.Remove(GetQpKey(qp->dip.Get(), qp->sport, qp->dport, qp->m_pg));
-        qp->odin.active = false;
-        OdinEvent event;
-        event.event = "complete";
-        TraceOdin(qp, event);
+    if (m_cc_mode == CC_MODE_ODIN) {
+        if (qp->odin.active) {
+            m_nic[qp->odin.nic].odin.Remove(
+                GetQpKey(qp->dip.Get(), qp->sport, qp->dport, qp->m_pg));
+            qp->odin.active = false;
+            OdinEvent event;
+            event.event = "complete";
+            TraceOdin(qp, event);
+        } else if (qp->m_persistent) {
+            OdinEvent event;
+            event.event = "teardown";
+            event.reason = "persistent_teardown";
+            TraceOdin(qp, event);
+        }
     }
     NS_ASSERT(!m_qpCompleteCallback.IsNull());
     if (m_cc_mode == 1) {

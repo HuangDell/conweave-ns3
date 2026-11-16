@@ -476,4 +476,21 @@ uint64_t SwitchNode::GetTxBytesOutDev(uint32_t outdev) {
     return m_txBytes[outdev];
 }
 
+int SwitchNode::PredictEcmpOutDev(uint32_t sip, uint32_t dip, uint16_t sport, uint16_t dport) const {
+    auto entry = m_rtTable.find(dip);
+    if (entry == m_rtTable.end() || entry->second.empty()) {
+        return -1;
+    }
+    const auto &nexthops = entry->second;
+    union {
+        uint8_t u8[4 + 4 + 2 + 2];
+        uint32_t u32[3];
+    } buf;
+    buf.u32[0] = sip;
+    buf.u32[1] = dip;
+    buf.u32[2] = sport | ((uint32_t)dport << 16);
+    uint32_t hashVal = EcmpHash(buf.u8, 12, m_ecmpSeed);
+    return nexthops[hashVal % nexthops.size()];
+}
+
 } /* namespace ns3 */

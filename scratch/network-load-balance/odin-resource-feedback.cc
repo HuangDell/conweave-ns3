@@ -10,50 +10,76 @@ using namespace ns3;
 bool OdinResourceFeedback::Start() {
     const auto& c = config_.cc;
     if (!c.odin_resource_feedback) return true;
+    bool multihop = config_.hrlb.enable != 0;
     if (c.odin_resource_feedback != 1 || c.mode != CC_MODE_ODIN ||
         c.odin_resource_host >= state_.nodes.GetN() || !c.odin_resource_period_ns ||
         c.odin_resource_window_ns < c.odin_resource_period_ns ||
         c.odin_resource_window_ns % c.odin_resource_period_ns ||
         c.odin_resource_window_ns / c.odin_resource_period_ns > 100000 ||
-        c.odin_resource_destinations.empty() || !config_.monitoring.odin_log) {
+        (!multihop && (c.odin_resource_destinations.empty() || !config_.monitoring.odin_log)) ||
+        (multihop && multihop_resources_.empty())) {
         std::cerr << "Invalid Odin resource feedback configuration\n";
         return false;
     }
     Ptr<Node> host = state_.nodes.Get(c.odin_resource_host);
     Ptr<RdmaDriver> driver = host->GetObject<RdmaDriver>();
     if (!driver) return false;
-    for (const auto& neighbor : state_.neighbor_interfaces[host]) {
-        Ptr<SwitchNode> candidate = DynamicCast<SwitchNode>(neighbor.first);
-        if (candidate) {
-            if (tor_) return false;  // Single directly attached ToR only.
-            tor_ = candidate;
-        }
-    }
-    if (!tor_) return false;
     hardware_ = driver->m_rdma;
-    for (uint32_t destination : c.odin_resource_destinations) {
-        if (destination >= state_.nodes.GetN() || destination == c.odin_resource_host) return false;
-        Ptr<Node> peer = state_.nodes.Get(destination);
-        auto found = state_.neighbor_interfaces[tor_].find(peer);
-        if (peer->GetNodeType() != 0 || found == state_.neighbor_interfaces[tor_].end()) return false;
-        Port port;
-        port.destination_ip = state_.server_addresses[destination].Get();
-        port.device = DynamicCast<QbbNetDevice>(tor_->GetDevice(found->second.idx));
-        if (!port.device || !found->second.up) return false;
-        ports_.push_back(port);
-        hardware_->m_odinResourceDestinations.insert(port.destination_ip);
+
+    if (multihop) {
+        for (const auto& res : multihop_resources_) {
+            if (res.switch_id >= state_.nodes.GetN()) return false;
+            Ptr<SwitchNode> sw = DynamicCast<SwitchNode>(state_.nodes.Get(res.switch_id));
+            if (!sw || res.interface >= sw->GetNDevices()) return false;
+            Ptr<QbbNetDevice> dev = DynamicCast<QbbNetDevice>(sw->GetDevice(res.interface));
+            if (!dev || !dev->IsLinkUp()) return false;
+            Port port;
+            port.destination_ip = 0;
+            port.sw = sw;
+            port.device = dev;
+            ports_.push_back(port);
+        }
+    } else {
+        for (const auto& neighbor : state_.neighbor_interfaces[host]) {
+            Ptr<SwitchNode> candidate = DynamicCast<SwitchNode>(neighbor.first);
+            if (candidate) {
+                if (tor_) return false;  // Single directly attached ToR only.
+                tor_ = candidate;
+            }
+        }
+        if (!tor_) return false;
+        for (uint32_t destination : c.odin_resource_destinations) {
+            if (destination >= state_.nodes.GetN() || destination == c.odin_resource_host)
+                return false;
+            Ptr<Node> peer = state_.nodes.Get(destination);
+            auto found = state_.neighbor_interfaces[tor_].find(peer);
+            if (peer->GetNodeType() != 0 || found == state_.neighbor_interfaces[tor_].end())
+                return false;
+            Port port;
+            port.destination_ip = state_.server_addresses[destination].Get();
+            port.sw = tor_;
+            port.device = DynamicCast<QbbNetDevice>(tor_->GetDevice(found->second.idx));
+            if (!port.device || !found->second.up) return false;
+            ports_.push_back(port);
+            hardware_->m_odinResourceDestinations.insert(port.destination_ip);
+        }
     }
     hardware_->m_odinResourceFeedback = true;
     hardware_->m_odinResourceStartNs = c.odin_resource_start_ns;
+    hardware_->m_odinResourceWindowNs = c.odin_resource_window_ns;
     uint64_t start = Seconds(config_.flowgen_start_time).GetNanoSeconds();
-    if (c.odin_resource_start_ns < start + c.odin_resource_window_ns ||
-        (c.odin_resource_start_ns - start) % c.odin_resource_period_ns) return false;
-    output_ = fopen((config_.io.odin_output_file + ".resources.csv").c_str(), "w");
-    if (!output_) return false;
-    fprintf(output_, "time_ns,event,version,host,switch,interface,destination,window_start_ns,"
-                     "measured_ns,delta_wire_bytes,line_bps,queue_bytes,tbo,eligible_qps,"
-                     "begin_tx_wire_bytes,end_tx_wire_bytes\n");
-    tick_ = Simulator::Schedule(NanoSeconds(start), &OdinResourceFeedback::Tick, this);
+    if (c.odin_resource_start_ns < start + c.odin_resource_window_ns) return false;
+    uint64_t accum_start = multihop ? (c.odin_resource_start_ns - c.odin_resource_window_ns) : start;
+    if ((c.odin_resource_start_ns - accum_start) % c.odin_resource_period_ns) return false;
+    bool write_log = multihop ? (config_.hrlb.odin_resource_log != 0) : (config_.monitoring.odin_log != 0);
+    if (write_log) {
+        output_ = fopen((config_.io.odin_output_file + ".resources.csv").c_str(), "w");
+        if (!output_) return false;
+        fprintf(output_, "time_ns,event,version,host,switch,interface,destination,window_start_ns,"
+                         "measured_ns,delta_wire_bytes,line_bps,queue_bytes,tbo,eligible_qps,"
+                         "begin_tx_wire_bytes,end_tx_wire_bytes\n");
+    }
+    tick_ = Simulator::Schedule(NanoSeconds(accum_start), &OdinResourceFeedback::Tick, this);
     return true;
 }
 
@@ -70,7 +96,7 @@ void OdinResourceFeedback::Tick() {
             continue;
         OdinResourceSample s;
         s.destination_ip = p.destination_ip;
-        s.switch_id = tor_->GetId();
+        s.switch_id = p.sw->GetId();
         s.interface = p.device->GetIfIndex();
         s.window_start_ns = h.front().first;
         s.measured_ns = now;
@@ -79,8 +105,8 @@ void OdinResourceFeedback::Tick() {
         s.end_tx_bytes = h.back().second;
         s.line_bps = p.device->GetDataRate().GetBitRate();
         s.queue_bytes = p.device->GetQueue()->GetNBytesTotal();
-        s.tbo = tor_->m_mmu->GetUsedBufferTotal() >
-                c.odin_tbo_ratio * tor_->m_mmu->GetMmuBufferBytes();
+        s.tbo = p.sw->m_mmu->GetUsedBufferTotal() >
+                c.odin_tbo_ratio * p.sw->m_mmu->GetMmuBufferBytes();
         samples.push_back(s);
     }
     if (!samples.empty()) {
@@ -94,17 +120,20 @@ void OdinResourceFeedback::Tick() {
 }
 
 void OdinResourceFeedback::Deliver(uint64_t version, std::vector<OdinResourceSample> samples) {
-    uint32_t eligible = hardware_->ApplyOdinResourceFeedback(version, samples);
+    uint32_t eligible = config_.hrlb.enable
+                            ? hardware_->ApplyOdinMultiHopResourceFeedback(version, samples)
+                            : hardware_->ApplyOdinResourceFeedback(version, samples);
     Write("delivered", version, samples, eligible);
 }
 
 void OdinResourceFeedback::Write(const char* event, uint64_t version,
     const std::vector<OdinResourceSample>& samples, uint32_t eligible) {
+    if (!output_) return;
     for (const auto& s : samples)
         fprintf(output_, "%lu,%s,%lu,%u,%u,%u,%u,%lu,%lu,%lu,%lu,%lu,%u,%u,%lu,%lu\n",
                 Simulator::Now().GetNanoSeconds(), event, version,
                 config_.cc.odin_resource_host, s.switch_id, s.interface,
-                Settings::ip_to_node_id(Ipv4Address(s.destination_ip)),
+                s.destination_ip ? Settings::ip_to_node_id(Ipv4Address(s.destination_ip)) : 0,
                 s.window_start_ns, s.measured_ns, s.delta_bytes, s.line_bps,
                 s.queue_bytes, s.tbo ? 1 : 0, eligible, s.begin_tx_bytes, s.end_tx_bytes);
 }

@@ -76,7 +76,11 @@ bool SimulationMonitor::OpenCoreOutputs() {
                 "sum_after_bps,u_before,u_after,base_rtt_ns,window_bytes,next_before_ns,"
                 "next_after_ns,last_packet_bytes,inflight_bytes,sample_hop,sample_queue_bytes,"
                 "sample_dt_ns,sample_delta_bytes,sample_line_bps,sample_time_mod_ns,"
-                "resource_version,resource_measured_ns,resource_window_start_ns,resource_switch,resource_interface\n");
+                "resource_version,resource_measured_ns,resource_window_start_ns,resource_switch,resource_interface");
+        if (config_.hrlb.enable) {
+            fprintf(odin_output_, ",qp_key,sport,dport,lane");
+        }
+        fprintf(odin_output_, "\n");
     }
     pfc_output_ = fopen(config_.io.pfc_output_file.c_str(), "w");
     fct_output_ = fopen(config_.io.fct_output_file.c_str(), "w");
@@ -327,7 +331,7 @@ void SimulationMonitor::OdinTrace(SimulationMonitor* self, Ptr<RdmaQueuePair> qp
     fprintf(self->odin_output_,
             "%lu,%s,%s,%d,%u,%u,%u,%u,%lu,%u,%.17g,%u,%.17g,%.17g,%s,%lu,%lu,"
             "%lu,%lu,%.17g,%.17g,%lu,%lu,%ld,%ld,%u,%lu,%u,%u,%lu,%lu,%lu,%lu,"
-            "%lu,%lu,%lu,%u,%u\n",
+            "%lu,%lu,%lu,%u,%u",
             Simulator::Now().GetNanoSeconds(), e.event, e.reason, qp->m_flow_id,
             Settings::ip_to_node_id(qp->sip), Settings::ip_to_node_id(qp->dip),
             e.nic, e.active, e.capacity, e.ack_seq, r.psi, r.tbo ? 1 : 0, r.beta,
@@ -338,6 +342,11 @@ void SimulationMonitor::OdinTrace(SimulationMonitor* self, Ptr<RdmaQueuePair> qp
             e.sample_delta_bytes, e.sample_line_bps, e.sample_time_mod_ns,
             e.resource_version, e.resource_measured_ns, e.resource_window_start_ns,
             e.resource_switch, e.resource_interface);
+    if (self->config_.hrlb.enable) {
+        uint64_t qp_key = RdmaHw::GetQpKey(qp->dip.Get(), qp->sport, qp->dport, qp->m_pg);
+        fprintf(self->odin_output_, ",%lu,%u,%u,%u", qp_key, qp->sport, qp->dport, qp->m_v5_lane);
+    }
+    fprintf(self->odin_output_, "\n");
 }
 
 void SimulationMonitor::StartCnpMonitoring(Ptr<RdmaHw> hardware) {
@@ -439,7 +448,10 @@ void SimulationMonitor::RecordQpState(Ptr<RdmaQueuePair> queue_pair, const char*
     if (rx_qp) {
         receiver_expected = rx_qp->ReceiverNextExpectedSeq;
     }
-    uint64_t qp_key = PersistentPoolKey(queue_pair);
+    uint64_t qp_key = config_.hrlb.enable
+                          ? RdmaHw::GetQpKey(queue_pair->dip.Get(), queue_pair->sport,
+                                             queue_pair->dport, queue_pair->m_pg)
+                          : PersistentPoolKey(queue_pair);
     fprintf(v5_qp_state_output_,
             "%lu,%s,%lu,%u,%u,%u,%u,%u,%u,%lu,%lu,%u,%lu,%lu,%.17g,%lu,%lu,%s,%lu,%lu\n",
             Simulator::Now().GetNanoSeconds(), event, qp_key, source_id, destination_id,
@@ -457,7 +469,10 @@ void SimulationMonitor::RecordWqeEvent(Ptr<RdmaQueuePair> queue_pair, uint32_t e
                                        RdmaQueuePair::WqeBoundary boundary) {
     NS_ASSERT_MSG(event == RdmaHw::WQE_COMMIT || event == RdmaHw::WQE_COMPLETE,
                   "unknown persistent WQE event");
-    uint64_t qp_key = PersistentPoolKey(queue_pair);
+    uint64_t qp_key = config_.hrlb.enable
+                          ? RdmaHw::GetQpKey(queue_pair->dip.Get(), queue_pair->sport,
+                                             queue_pair->dport, queue_pair->m_pg)
+                          : PersistentPoolKey(queue_pair);
     uint64_t complete_time = event == RdmaHw::WQE_COMPLETE
                                  ? Simulator::Now().GetNanoSeconds()
                                  : 0;

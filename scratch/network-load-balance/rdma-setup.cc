@@ -43,16 +43,27 @@ bool ConfigureSimulationDefaults(const ExperimentConfig& config) {
     }
 
     if (config.cc.mode == CC_MODE_ODIN) {
-        if (config.traffic.v5_qp_pool || config.traffic.v5_nsub != 1 ||
-            config.traffic.v5_chunk_bytes || config.traffic.v5_estimator_enable ||
-            config.host_sensing.enable || config.lb.mode != LbMode::kEcmp ||
-            config.cc.enable_irn || !config.cc.enable_pfc || !config.cc.has_win ||
-            !config.cc.var_win || !config.cc.rate_bound || config.cc.global_t != 0 ||
-            !(config.cc.odin_eta > 0 && config.cc.odin_eta <= 1) ||
-            !(config.cc.odin_gamma > 0 && config.cc.odin_gamma <= 1) ||
-            !(config.cc.odin_beta_mbps >= 0 && config.cc.odin_beta_mbps <= 1e6) ||
-            !(config.cc.odin_tbo_ratio >= 0 && config.cc.odin_tbo_ratio <= 1)) {
-            std::cerr << "Invalid Odin configuration: ordinary ECMP QPs, PFC, window and pacing required\n";
+        bool valid_odin_base =
+            config.lb.mode == LbMode::kEcmp && !config.cc.enable_irn && config.cc.enable_pfc &&
+            config.cc.has_win && config.cc.var_win && config.cc.rate_bound &&
+            config.cc.global_t == 0 && (config.cc.odin_eta > 0 && config.cc.odin_eta <= 1) &&
+            (config.cc.odin_gamma > 0 && config.cc.odin_gamma <= 1) &&
+            (config.cc.odin_beta_mbps >= 0 && config.cc.odin_beta_mbps <= 1e6) &&
+            (config.cc.odin_tbo_ratio >= 0 && config.cc.odin_tbo_ratio <= 1);
+        bool valid_legacy_odin =
+            !config.hrlb.enable && !config.traffic.v5_qp_pool && config.traffic.v5_nsub == 1 &&
+            !config.traffic.v5_chunk_bytes && !config.traffic.v5_estimator_enable &&
+            !config.host_sensing.enable;
+        bool valid_hrlb_odin =
+            config.hrlb.enable == 1 && config.cc.odin_resource_feedback == 1 &&
+            config.traffic.v5_qp_pool == 1 && config.traffic.v5_qp_pool_size == config.hrlb.k &&
+            config.traffic.v5_nsub == 1 && !config.traffic.v5_chunk_bytes &&
+            !config.traffic.v5_estimator_enable && !config.host_sensing.enable &&
+            (config.hrlb.policy == "uniform" || config.hrlb.policy == "redirect") &&
+            config.hrlb.k >= 1 && config.hrlb.chunk_bytes >= 1 && config.hrlb.depth >= 1 &&
+            config.hrlb.theta > 0.0;
+        if (!valid_odin_base || (!valid_legacy_odin && !valid_hrlb_odin)) {
+            std::cerr << "Invalid Odin configuration: ECMP, PFC, window and pacing required\n";
             return false;
         }
     }
@@ -89,6 +100,10 @@ void InstallRdmaHosts(const ExperimentConfig& config, SimulationState& state, ui
         hardware->SetAttribute("CcMode", UintegerValue(config.cc.mode));
         hardware->m_odinTraceEnabled = config.monitoring.odin_log != 0;
         hardware->m_odinTraceFlowIds = config.monitoring.odin_log_flow_ids;
+        hardware->m_odinAllowPersistent = config.hrlb.enable != 0;
+        hardware->m_odinResourceFreshnessNs = config.hrlb.freshness_ns;
+        hardware->m_odinResourceWindowNs = config.cc.odin_resource_window_ns;
+        hardware->m_odinExpectedMappingVersion = config.hrlb.mapping_version;
         hardware->SetAttribute("OdinEta", DoubleValue(config.cc.odin_eta));
         hardware->SetAttribute("OdinGamma", DoubleValue(config.cc.odin_gamma));
         hardware->SetAttribute("OdinBeta", DataRateValue(DataRate(

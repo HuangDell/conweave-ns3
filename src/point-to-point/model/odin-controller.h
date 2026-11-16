@@ -39,6 +39,7 @@ struct OdinResourceSample {
     uint64_t begin_tx_bytes = 0, end_tx_bytes = 0;
     uint64_t line_bps = 0, queue_bytes = 0;
     bool tbo = false;
+    uint64_t epoch = 0;
 };
 
 // Trace payload emitted synchronously, including optional resource provenance.

@@ -94,6 +94,20 @@ struct HostSensingConfig {
     uint32_t min_baseline_samples = 20;
 };
 
+struct HrlbConfig {
+    uint32_t enable = 0;
+    std::string policy = "uniform";
+    uint32_t redirect = 0;
+    uint32_t k = 4;
+    uint32_t chunk_bytes = 64000;
+    uint32_t depth = 2;
+    double theta = 1.0;
+    uint64_t freshness_ns = 16000;
+    uint32_t mapping_version = 1;
+    uint32_t decision_log = 0;
+    uint32_t odin_resource_log = 1;
+};
+
 struct CongestionControlConfig {
     uint32_t mode = 1;
     double odin_eta = 0.95, odin_gamma = 0.1, odin_beta_mbps = 5;
@@ -189,6 +203,9 @@ struct IoConfig {
     std::string host_probe_output_file = "host_probe.csv";
     std::string host_path_truth_output_file = "host_path_truth.csv";
     std::string host_probe_truth_output_file = "host_probe_truth.csv";
+    std::string hrlb_tuple_file;
+    std::string hrlb_decision_output_file = "hrlb_decisions.csv";
+    std::string hrlb_message_output_file = "hrlb_messages.csv";
 };
 
 struct LinkDegradeEvent {
@@ -212,6 +229,7 @@ struct ExperimentConfig {
     CongestionControlConfig cc;
     MonitoringConfig monitoring;
     HostSensingConfig host_sensing;
+    HrlbConfig hrlb;
     IoConfig io;
     FailureConfig failures;
 

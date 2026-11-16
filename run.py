@@ -415,8 +415,8 @@ def validate_physical_options(args):
 def validate_odin_options(args):
     """Reject unsupported Odin combinations before allocating outputs or inputs."""
     if args.cc != 'odin':
-        if args.odin_log or args.odin_resource_feedback:
-            raise ValueError('--odin-log and --odin-resource-feedback require --cc odin')
+        if args.odin_log or args.odin_resource_feedback or args.hrlb_enable:
+            raise ValueError('--odin-log, --odin-resource-feedback, and --hrlb-enable require --cc odin')
         return
     for name in ('odin_eta', 'odin_gamma'):
         value = getattr(args, name)
@@ -426,26 +426,43 @@ def validate_odin_options(args):
         raise ValueError('odin_beta_mbps must be finite and in [0, 1000000]')
     if not math.isfinite(args.odin_tbo_ratio) or not 0 <= args.odin_tbo_ratio <= 1:
         raise ValueError('odin_tbo_ratio must be in [0, 1]')
-    if (args.lb != 'fecmp' or args.v5_qp_pool or args.v5_nsub != 1 or
+    if args.hrlb_enable:
+        if (args.lb != 'fecmp' or not args.v5_qp_pool or args.v5_qp_pool_size != args.hrlb_k or
+                args.v5_nsub != 1 or args.v5_chunk_bytes or args.v5_estimator_enable or
+                args.host_sensing_enable or args.irn or args.pfc != 1 or args.degrade_link or
+                not args.odin_resource_feedback):
+            raise ValueError('HRLB requires --cc odin --lb fecmp --v5_qp_pool 1 --v5_qp_pool_size K '
+                             '--v5_nsub 1 --v5_chunk_bytes 0 --odin-resource-feedback 1, PFC=1, IRN=0')
+        if (args.hrlb_k < 1 or args.hrlb_chunk_bytes < 1 or args.hrlb_depth < 1 or
+                not math.isfinite(args.hrlb_theta) or args.hrlb_theta <= 0 or
+                args.hrlb_freshness_ns < 0 or not args.hrlb_tuple_file):
+            raise ValueError('Invalid HRLB parameters or missing --hrlb-tuple-file')
+    elif (args.lb != 'fecmp' or args.v5_qp_pool or args.v5_nsub != 1 or
             args.v5_chunk_bytes or args.v5_estimator_enable or args.host_sensing_enable or
             args.irn or args.pfc != 1 or args.degrade_link):
         raise ValueError('Odin v1 requires ordinary fixed-path ECMP QPs, PFC=1, IRN=0, '
                          'no pool/chunk/estimator/host sensing/link degradation')
     if args.odin_resource_feedback:
         period, window = args.odin_resource_period_ns, args.odin_resource_window_ns
-        if (not args.odin_log or args.odin_resource_host < 0 or period <= 0 or window < period or
-                window % period or window // period > 100000 or args.odin_resource_delay_ns < 0 or
-                args.odin_resource_start_ns < 2000000000 + window or
-                (args.odin_resource_start_ns - 2000000000) % period):
-            raise ValueError('invalid resource timing: log=1, integral window/period, aligned start >= 2s+window required')
-        try:
-            destinations = [int(v) for v in args.odin_resource_destinations.split(',')]
-        except ValueError as error:
-            raise ValueError('resource destinations must be comma-separated host IDs') from error
-        if (not destinations or len(set(destinations)) != len(destinations) or
-                any(v < 0 or v == args.odin_resource_host for v in destinations)):
-            raise ValueError('invalid resource destinations')
-        args.odin_resource_destinations = sorted(destinations)
+        flowgen_start_ns = round(args.flowgen_start_time * 1e9)
+        if ((not args.hrlb_enable and not args.odin_log) or args.odin_resource_host < 0 or
+                period <= 0 or window < period or window % period or window // period > 100000 or
+                args.odin_resource_delay_ns < 0 or
+                args.odin_resource_start_ns < flowgen_start_ns + window):
+            raise ValueError('invalid resource timing: integral window/period and start >= flowgen_start+window required')
+        if not args.hrlb_enable and (args.odin_resource_start_ns - flowgen_start_ns) % period:
+            raise ValueError('invalid resource timing: start must align with flowgen_start by period')
+        if not args.hrlb_enable:
+            try:
+                destinations = [int(v) for v in args.odin_resource_destinations.split(',')]
+            except ValueError as error:
+                raise ValueError('resource destinations must be comma-separated host IDs') from error
+            if (not destinations or len(set(destinations)) != len(destinations) or
+                    any(v < 0 or v == args.odin_resource_host for v in destinations)):
+                raise ValueError('invalid resource destinations')
+            args.odin_resource_destinations = sorted(destinations)
+        else:
+            args.odin_resource_destinations = []
 
 
 def main():
@@ -628,13 +645,27 @@ def main():
     parser.add_argument('--odin-tbo-ratio', type=float, default=1.0 / 16)
     parser.add_argument('--odin-log', type=int, choices=(0, 1), default=0)
     parser.add_argument('--odin-resource-feedback', type=int, choices=(0, 1), default=0,
-                        help='Experimental ideal same-ToR resource reports; zero wire overhead')
+                        help='Experimental ideal resource reports; zero wire overhead')
+    parser.add_argument('--odin-resource-log', type=int, choices=(0, 1), default=None,
+                        help='Write .resources.csv (defaults to --odin-log)')
     parser.add_argument('--odin-resource-host', type=int, default=0)
     parser.add_argument('--odin-resource-destinations', default='1,2')
     parser.add_argument('--odin-resource-period-ns', type=int, default=8000)
     parser.add_argument('--odin-resource-window-ns', type=int, default=32000)
     parser.add_argument('--odin-resource-delay-ns', type=int, default=2000)
     parser.add_argument('--odin-resource-start-ns', type=int, default=2001000000)
+    parser.add_argument('--flowgen-start-time', type=float, default=FLOWGEN_DEFAULT_TIME)
+    parser.add_argument('--hrlb-enable', type=int, choices=(0, 1), default=0)
+    parser.add_argument('--hrlb-policy', choices=('uniform', 'redirect'), default='uniform')
+    parser.add_argument('--hrlb-redirect', type=int, choices=(0, 1), default=0)
+    parser.add_argument('--hrlb-k', type=int, default=4)
+    parser.add_argument('--hrlb-chunk-bytes', type=int, default=64000)
+    parser.add_argument('--hrlb-depth', type=int, default=2)
+    parser.add_argument('--hrlb-theta', type=float, default=1.0)
+    parser.add_argument('--hrlb-freshness-ns', type=int, default=16000)
+    parser.add_argument('--hrlb-mapping-version', type=int, default=1)
+    parser.add_argument('--hrlb-decision-log', type=int, choices=(0, 1), default=0)
+    parser.add_argument('--hrlb-tuple-file', default=None)
     parser.add_argument('--packet-payload-bytes', type=int, default=1000)
     parser.add_argument('--link-delay-ns', type=int, default=1000)
     parser.add_argument('--expected-bdp-bytes', type=int, default=0,
@@ -664,7 +695,7 @@ def main():
     topo = args.topo
     enforce_win = args.enforce_win
     cdf = args.cdf
-    flowgen_start_time = FLOWGEN_DEFAULT_TIME  # default: 2.0
+    flowgen_start_time = args.flowgen_start_time  # default: 2.0
     flowgen_stop_time = flowgen_start_time + \
         float(args.simul_time)  # default: 2.0
     sw_monitoring_interval = int(args.sw_monitoring_interval)
@@ -762,7 +793,8 @@ def main():
                                       args.v5_nsub != 1 or args.v5_chunk_bytes):
         raise ValueError('ConWeave causal trace requires native ConWeave without v5 pool/chunks')
     if args.native_resource_log and (args.lb not in {"fecmp", "conga", "letflow", "conweave"} or
-                                     args.v5_qp_pool or args.v5_nsub != 1 or args.v5_chunk_bytes):
+                                     (args.v5_qp_pool and not args.hrlb_enable) or
+                                     args.v5_nsub != 1 or args.v5_chunk_bytes):
         raise ValueError("native resources require one native QP per input row, without v5 pool/chunks")
     if args.native_diag_log and args.v5_qp_pool:
         raise Exception("CONFIG ERROR : native diagnostics require the native non-v5 substrate")
@@ -1109,8 +1141,30 @@ def main():
                                ('DELAY_NS', args.odin_resource_delay_ns),
                                ('START_NS', args.odin_resource_start_ns)]:
                 config += f'ODIN_RESOURCE_{key} {value}\n'
-            config += ('ODIN_RESOURCE_DESTINATIONS ' + str(len(args.odin_resource_destinations)) + ' ' +
-                       ' '.join(map(str, args.odin_resource_destinations)) + '\n')
+            if args.odin_resource_destinations:
+                config += ('ODIN_RESOURCE_DESTINATIONS ' + str(len(args.odin_resource_destinations)) + ' ' +
+                           ' '.join(map(str, args.odin_resource_destinations)) + '\n')
+        if args.hrlb_enable:
+            resource_log = args.odin_log if args.odin_resource_log is None else args.odin_resource_log
+            tuple_abs = os.path.abspath(args.hrlb_tuple_file)
+            if not exists(tuple_abs):
+                raise FileNotFoundError(tuple_abs)
+            config += (
+                f"ODIN_RESOURCE_LOG {resource_log}\n"
+                f"HRLB_ENABLE 1\n"
+                f"HRLB_POLICY {args.hrlb_policy}\n"
+                f"HRLB_REDIRECT {args.hrlb_redirect}\n"
+                f"HRLB_K {args.hrlb_k}\n"
+                f"HRLB_CHUNK_BYTES {args.hrlb_chunk_bytes}\n"
+                f"HRLB_DEPTH {args.hrlb_depth}\n"
+                f"HRLB_THETA {args.hrlb_theta}\n"
+                f"HRLB_FRESHNESS_NS {args.hrlb_freshness_ns}\n"
+                f"HRLB_MAPPING_VERSION {args.hrlb_mapping_version}\n"
+                f"HRLB_DECISION_LOG {args.hrlb_decision_log}\n"
+                f"HRLB_TUPLE_FILE {tuple_abs}\n"
+                f"HRLB_DECISION_OUTPUT_FILE mix/output/{config_ID}/{config_ID}_out_hrlb_decisions.csv\n"
+                f"HRLB_MESSAGE_OUTPUT_FILE mix/output/{config_ID}/{config_ID}_out_hrlb_messages.csv\n"
+            )
 
     config = config.replace('PACKET_PAYLOAD_SIZE 1000\n',
                             f'PACKET_PAYLOAD_SIZE {args.packet_payload_bytes}\n')
@@ -1228,7 +1282,17 @@ def main():
                 destinations=args.odin_resource_destinations, period_ns=args.odin_resource_period_ns,
                 window_ns=args.odin_resource_window_ns, delay_ns=args.odin_resource_delay_ns,
                 start_ns=args.odin_resource_start_ns, ack_cc_after_start=False,
-                qp_order='ascending_flow_id', zero_psi='skip', unsent_only=True)
+                qp_order='ascending_message_id_lane' if args.hrlb_enable else 'ascending_flow_id',
+                zero_psi='skip', unsent_only=True)
+        if args.hrlb_enable:
+            manifest['config']['hrlb'] = dict(
+                policy=args.hrlb_policy, redirect=args.hrlb_redirect, k=args.hrlb_k,
+                chunk_bytes=args.hrlb_chunk_bytes, depth=args.hrlb_depth, theta=args.hrlb_theta,
+                freshness_ns=args.hrlb_freshness_ns, mapping_version=args.hrlb_mapping_version,
+                decision_log=args.hrlb_decision_log,
+                odin_resource_log=(args.odin_log if args.odin_resource_log is None else args.odin_resource_log),
+                tuple_file=os.path.abspath(args.hrlb_tuple_file),
+                tuple_sha256=sha256_file(os.path.abspath(args.hrlb_tuple_file)))
     manifest['config']['physical'] = dict(
         packet_payload_bytes=args.packet_payload_bytes, link_delay_ns=args.link_delay_ns,
         expected_bdp_bytes=bdp, buffer_bytes=args.buffer_bytes or int(float(buffer) * 1024 * 1024),

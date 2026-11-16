@@ -74,6 +74,7 @@ class SwitchNode : public Node {
     bool SwitchReceiveFromDevice(Ptr<NetDevice> device, Ptr<Packet> packet, CustomHeader &ch);
     void SwitchNotifyDequeue(uint32_t ifIndex, uint32_t qIndex, Ptr<Packet> p);
     uint64_t GetTxBytesOutDev(uint32_t outdev);
+    int PredictEcmpOutDev(uint32_t sip, uint32_t dip, uint16_t sport, uint16_t dport) const;
 };
 
 } /* namespace ns3 */

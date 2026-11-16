@@ -63,10 +63,48 @@ class RdmaHw : public Object {
     void HandleAckOdin(Ptr<RdmaQueuePair> qp, CustomHeader& ch);
     void TraceOdin(Ptr<RdmaQueuePair> qp, OdinEvent event);
     bool m_odinResourceFeedback = false;
+    bool m_odinAllowPersistent = false;
     uint64_t m_odinResourceStartNs = 0, m_odinResourceVersion = 0;
+    uint64_t m_odinResourceWindowNs = 32000, m_odinResourceFreshnessNs = 16000;
+    uint32_t m_odinExpectedMappingVersion = 1;
     std::set<uint32_t> m_odinResourceDestinations;
+    struct OdinResourceKey {
+        uint32_t switch_id = 0;
+        uint32_t interface = 0;
+        bool operator<(const OdinResourceKey& other) const {
+            return switch_id != other.switch_id ? switch_id < other.switch_id
+                                                 : interface < other.interface;
+        }
+    };
+    struct OdinPathSpec {
+        uint32_t path_id = 0;
+        uint32_t mapping_version = 1;
+        std::vector<OdinResourceKey> resources;
+    };
+    struct OdinCachedResource {
+        OdinResourceSample sample;
+        uint64_t epoch = 0;
+        uint64_t received_ns = 0;
+    };
+    struct OdinSwitchTboState {
+        bool tbo = false;
+        uint64_t epoch = 0;
+        uint64_t measured_ns = 0;
+    };
+    std::map<uint64_t, OdinPathSpec> m_odinResourcePaths;
+    std::map<OdinResourceKey, OdinCachedResource> m_odinResourceCache;
+    std::map<uint32_t, OdinSwitchTboState> m_odinSwitchTboCache;
+    typedef Callback<void, uint64_t> OdinResourceDeliveredCallback;
+    OdinResourceDeliveredCallback m_odinResourceDeliveredCallback;
+    void RegisterOdinResourcePath(uint64_t qp_key, uint32_t path_id, uint32_t mapping_version,
+                                  const std::vector<OdinResourceKey>& resources);
+    bool QueryOdinPathScore(uint64_t qp_key, uint64_t base_rtt_ns, double* score, bool* tbo,
+                            uint64_t* max_age_ns, uint64_t* min_version,
+                            OdinResourceSample* bottleneck_sample, const char** reason) const;
     uint32_t ApplyOdinResourceFeedback(uint64_t version,
                                      const std::vector<OdinResourceSample>& samples);
+    uint32_t ApplyOdinMultiHopResourceFeedback(uint64_t version,
+                                             const std::vector<OdinResourceSample>& samples);
     std::vector<RdmaInterfaceMgr> m_nic;  // list of running nic controlled by this RdmaHw
     std::unordered_map<uint64_t, Ptr<RdmaQueuePair>> m_qpMap;      // mapping from uint64_t to qp
     std::unordered_map<uint64_t, Ptr<RdmaRxQueuePair>> m_rxQpMap;  // mapping from uint64_t to rx qp
@@ -109,7 +147,8 @@ class RdmaHw : public Object {
     Ptr<RdmaQueuePair> AppendPersistentWqe(
         uint16_t pg, Ipv4Address sip, Ipv4Address dip, uint16_t sport, uint16_t dport,
         uint32_t win, uint64_t baseRtt, int32_t app_id, uint32_t chunk_id, uint64_t bytes,
-        uint32_t lane, uint32_t traffic_class);
+        uint32_t lane, uint32_t traffic_class, bool notify_nic = true);
+    void NotifyPersistentQps(const std::vector<Ptr<RdmaQueuePair>>& qps);
     void SealPersistentQueuePair(uint32_t dip, uint16_t sport, uint16_t dport, uint16_t pg,
                                  uint64_t expected_wqes);
 

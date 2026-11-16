@@ -284,7 +284,12 @@ void TopologyManager::SetRoutingEntries() {
             Ptr<Node> destination = destination_entry.first;
             Ipv4Address destination_address =
                 destination->GetObject<Ipv4>()->GetAddress(1, 0).GetLocal();
-            for (const auto& next : destination_entry.second) {
+            std::vector<Ptr<Node>> ordered_next = destination_entry.second;
+            if (config_.hrlb.enable) {
+                std::sort(ordered_next.begin(), ordered_next.end(),
+                          [](Ptr<Node> a, Ptr<Node> b) { return a->GetId() < b->GetId(); });
+            }
+            for (const auto& next : ordered_next) {
                 uint32_t interface = state_.neighbor_interfaces[node][next].idx;
                 if (node->GetNodeType() == 1) {
                     DynamicCast<SwitchNode>(node)->AddTableEntry(destination_address, interface);

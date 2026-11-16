@@ -1,6 +1,7 @@
 /* -*- Mode:C++; c-file-style:"gnu"; indent-tabs-mode:nil; -*- */
 
 #include "experiment-config.h"
+#include "host-resource-lb.h"
 #include "load-balancer-setup.h"
 #include "monitoring.h"
 #include "odin-resource-feedback.h"
@@ -57,7 +58,13 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    nlb::HostResourceLb hrlb(config, state);
+    if (!hrlb.LoadTupleSpec()) {
+        return 1;
+    }
+
     nlb::TrafficScheduler traffic(config, state, monitor);
+    traffic.SetHostResourceLb(&hrlb);
     if (!traffic.LoadFlowFile()) {
         return 1;
     }
@@ -69,6 +76,11 @@ int main(int argc, char* argv[]) {
 
     Ipv4GlobalRoutingHelper::PopulateRoutingTables();
 
+    if (!hrlb.Initialize()) {
+        std::cerr << "Error: cannot initialize host resource LB\n";
+        hrlb.Close();
+        return 1;
+    }
     traffic.InitializePorts();
     traffic.Start();
     topology.ScheduleLinkEvents();
@@ -80,9 +92,13 @@ int main(int argc, char* argv[]) {
     topology.BuildTorInterfaceMaps();
     monitor.StartPeriodicMonitoring();
     nlb::OdinResourceFeedback resource_feedback(config, state);
+    if (hrlb.IsEnabled()) {
+        resource_feedback.SetMultiHopResources(hrlb.MonitoredResources());
+    }
     if (!resource_feedback.Start()) {
         std::cerr << "Error: cannot start Odin resource feedback\n";
         resource_feedback.Close();
+        hrlb.Close();
         return 1;
     }
 
@@ -94,6 +110,7 @@ int main(int argc, char* argv[]) {
     Simulator::Stop(Seconds(config.flowgen_stop_time + 10.0));
     Simulator::Run();
     resource_feedback.Close();
+    hrlb.Close();
     monitor.CloseOutputs();
     Simulator::Destroy();
 

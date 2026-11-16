@@ -16,6 +16,34 @@ bool LoadExperimentConfig(const std::string& path, ExperimentConfig* config) {
     while (conf >> key) {
         if (key == "ODIN_RESOURCE_FEEDBACK") {
             conf >> config->cc.odin_resource_feedback;
+        } else if (key == "ODIN_RESOURCE_LOG") {
+            conf >> config->hrlb.odin_resource_log;
+        } else if (key == "HRLB_ENABLE") {
+            conf >> config->hrlb.enable;
+        } else if (key == "HRLB_POLICY") {
+            conf >> config->hrlb.policy;
+        } else if (key == "HRLB_REDIRECT") {
+            conf >> config->hrlb.redirect;
+        } else if (key == "HRLB_K") {
+            conf >> config->hrlb.k;
+        } else if (key == "HRLB_CHUNK_BYTES") {
+            conf >> config->hrlb.chunk_bytes;
+        } else if (key == "HRLB_DEPTH") {
+            conf >> config->hrlb.depth;
+        } else if (key == "HRLB_THETA") {
+            conf >> config->hrlb.theta;
+        } else if (key == "HRLB_FRESHNESS_NS") {
+            conf >> config->hrlb.freshness_ns;
+        } else if (key == "HRLB_MAPPING_VERSION") {
+            conf >> config->hrlb.mapping_version;
+        } else if (key == "HRLB_DECISION_LOG") {
+            conf >> config->hrlb.decision_log;
+        } else if (key == "HRLB_TUPLE_FILE") {
+            conf >> config->io.hrlb_tuple_file;
+        } else if (key == "HRLB_DECISION_OUTPUT_FILE") {
+            conf >> config->io.hrlb_decision_output_file;
+        } else if (key == "HRLB_MESSAGE_OUTPUT_FILE") {
+            conf >> config->io.hrlb_message_output_file;
         } else if (key == "ODIN_RESOURCE_HOST") {
             conf >> config->cc.odin_resource_host;
         } else if (key == "ODIN_RESOURCE_PERIOD_NS") {

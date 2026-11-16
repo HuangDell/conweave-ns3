@@ -1,5 +1,6 @@
 #include "traffic-scheduler.h"
 
+#include "host-resource-lb.h"
 #include "monitoring.h"
 
 #include <ns3/applications-module.h>
@@ -42,7 +43,8 @@ bool TrafficScheduler::LoadFlowFile() {
         return false;
     }
     target_completion_count_ = CalculateTargetCompletionCount();
-    if (config_.traffic.v5_nsub > 1 || PersistentPoolEnabled() || config_.monitoring.native_resource_log) {
+    if (config_.traffic.v5_nsub > 1 || PersistentPoolEnabled() ||
+        config_.monitoring.native_resource_log || (hrlb_ && hrlb_->IsEnabled())) {
         std::cerr << "V5_TARGET_COMPLETION_COUNT\t\t" << target_completion_count_ << "\n";
     }
     return true;
@@ -125,6 +127,25 @@ uint64_t TrafficScheduler::ChunkCount(uint32_t bytes) const {
 }
 
 uint64_t TrafficScheduler::CalculateTargetCompletionCount() {
+    if (hrlb_ && hrlb_->IsEnabled()) {
+        std::streampos first_flow_position = flow_file_.tellg();
+        uint64_t target = 0;
+        for (uint32_t i = 0; i < flow_count_; ++i) {
+            uint32_t source = 0;
+            uint32_t destination = 0;
+            uint32_t priority_group = 0;
+            uint32_t target_length = 0;
+            double start_time = 0;
+            flow_file_ >> source >> destination >> priority_group >> target_length >> start_time;
+            if (target_length == 0) {
+                target_length = 1;
+            }
+            target += hrlb_->IsTargetFlow(i) ? hrlb_->TargetChunkCount(target_length) : 1;
+        }
+        flow_file_.clear();
+        flow_file_.seekg(first_flow_position);
+        return target;
+    }
     if (LaneCount() <= 1) {
         return flow_count_;
     }
@@ -981,7 +1002,37 @@ void TrafficScheduler::ScheduleFlowInputs() {
         assert(state_.nodes.Get(source)->GetNodeType() == 0 &&
                state_.nodes.Get(destination)->GetNodeType() == 0);
 
-        if (ChunkModeEnabled()) {
+        if (hrlb_ && hrlb_->IsEnabled()) {
+            if (hrlb_->IsTargetFlow(app_id)) {
+                hrlb_->AddPendingTargetMessage(app_id, source, destination, priority_group,
+                                               target_length, flow_input_.start_time);
+            } else {
+                uint16_t bg_sport = 0;
+                uint16_t bg_dport = 0;
+                NS_ABORT_MSG_IF(!hrlb_->GetBackgroundTuple(app_id, &bg_sport, &bg_dport),
+                                "missing frozen background tuple for flow_id " << app_id);
+                uint32_t window =
+                    config_.cc.has_win
+                        ? (config_.cc.global_t == 1
+                               ? state_.max_bdp
+                               : state_.pair_bdp[state_.nodes.Get(source)]
+                                                [state_.nodes.Get(destination)])
+                        : 0;
+                uint64_t base_rtt =
+                    config_.cc.global_t == 1
+                        ? state_.max_rtt
+                        : state_.pair_rtt[state_.nodes.Get(source)][state_.nodes.Get(destination)];
+                RdmaClientHelper client_helper(
+                    priority_group, state_.server_addresses[source],
+                    state_.server_addresses[destination], bg_sport, bg_dport, target_length,
+                    window, base_rtt);
+                client_helper.SetAttribute("StatFlowID", IntegerValue(app_id));
+                ApplicationContainer applications =
+                    client_helper.Install(state_.nodes.Get(source));
+                applications.Start(Seconds(0));
+                applications.Stop(Seconds(100.0));
+            }
+        } else if (ChunkModeEnabled()) {
             double bytes_per_second =
                 config_.traffic.v5_chunk_commit_rate_gbps > 0.0
                     ? config_.traffic.v5_chunk_commit_rate_gbps * 1000000000.0 / 8.0
@@ -1033,12 +1084,17 @@ void TrafficScheduler::ScheduleFlowInputs() {
         ReadFlowInput();
     }
 
+    if (hrlb_ && hrlb_->IsEnabled()) {
+        hrlb_->StartAddedMessages();
+    }
+
     if (flow_input_.idx < flow_count_) {
         Simulator::Schedule(Seconds(flow_input_.start_time) - Simulator::Now(),
                             &TrafficScheduler::ScheduleFlowInputs, this);
     } else {
         flow_file_.close();
-        if (PersistentPoolEnabled() && !persistent_pool_seal_scheduled_) {
+        if (PersistentPoolEnabled() && !(hrlb_ && hrlb_->IsEnabled()) &&
+            !persistent_pool_seal_scheduled_) {
             persistent_pool_seal_scheduled_ = true;
             double seal_time = std::max(Simulator::Now().GetSeconds(),
                                         last_persistent_commit_time_) + 1e-9;

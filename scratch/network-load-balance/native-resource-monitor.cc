@@ -95,21 +95,26 @@ void NativeResourceMonitor::QpEvent(Ptr<RdmaQueuePair> qp, const char* event) {
 }
 
 void NativeResourceMonitor::Registered(NativeResourceMonitor* self, Ptr<RdmaQueuePair> qp) {
-    NS_ASSERT_MSG(qp->m_flow_id >= 0 && !qp->m_persistent, "resources require native flow IDs");
-    NS_ASSERT_MSG(self->qps_.find(qp->m_flow_id) == self->qps_.end(), "duplicate native flow ID");
+    NS_ASSERT_MSG(qp->m_flow_id >= 0 && (!qp->m_persistent || self->config_.hrlb.enable),
+                  "resources require native flow IDs");
+    uint32_t src = Settings::ip_to_node_id(qp->sip);
+    uint64_t qp_key = RdmaHw::GetQpKey(qp->dip.Get(), qp->sport, qp->dport, qp->m_pg);
+    QpMapKey map_key(src, qp_key);
+    NS_ASSERT_MSG(self->qps_.find(map_key) == self->qps_.end(), "duplicate QP registration");
     QpState state;
     state.qp = qp;
-    uint32_t src = Settings::ip_to_node_id(qp->sip);
     uint32_t dst = Settings::ip_to_node_id(qp->dip);
     if (self->mechanism_ && src / 8 != dst / 8 && self->sampled_hosts_.insert(src).second)
         state.mechanism_sample = true;
-    self->qps_[qp->m_flow_id] = state;
-    self->host_qps_[Settings::ip_to_node_id(qp->sip)].push_back(&self->qps_[qp->m_flow_id]);
+    self->qps_[map_key] = state;
+    self->host_qps_[src].push_back(&self->qps_[map_key]);
     self->QpEvent(qp, "create");
 }
 
 void NativeResourceMonitor::Completed(NativeResourceMonitor* self, Ptr<RdmaQueuePair> qp) {
-    auto found = self->qps_.find(qp->m_flow_id);
+    uint32_t src = Settings::ip_to_node_id(qp->sip);
+    uint64_t qp_key = RdmaHw::GetQpKey(qp->dip.Get(), qp->sport, qp->dport, qp->m_pg);
+    auto found = self->qps_.find(QpMapKey(src, qp_key));
     NS_ASSERT_MSG(found != self->qps_.end() && !found->second.complete, "unknown/duplicate native completion");
     self->Mechanism(found->second, "complete");
     found->second.complete = true;
@@ -126,16 +131,17 @@ void NativeResourceMonitor::Tx(NativeResourceMonitor* self, Ptr<QbbNetDevice> de
     FlowIDNUMTag tag;
     bool has_tag = packet->PeekPacketTag(tag);
     NS_ABORT_MSG_IF(!has_tag, "native data packet lacks flow ID");
-    auto found = self->qps_.find(tag.GetId());
+    uint32_t node = device->GetNode()->GetId();
+    uint64_t qp_key = RdmaHw::GetQpKey(ch.dip, ch.udp.sport, ch.udp.dport, ch.udp.pg);
+    auto found = self->qps_.find(QpMapKey(node, qp_key));
     NS_ABORT_MSG_IF(found == self->qps_.end(), "NIC service precedes QP registration");
     Ptr<RdmaQueuePair> qp = found->second.qp;
     NS_ABORT_MSG_IF(qp->sip.Get() != ch.sip || qp->dip.Get() != ch.dip ||
                     qp->sport != ch.udp.sport || qp->dport != ch.udp.dport ||
                     qp->m_pg != ch.udp.pg ||
-                    Settings::ip_to_node_id(qp->sip) != device->GetNode()->GetId(),
+                    Settings::ip_to_node_id(qp->sip) != node,
                     "Native flow-ID tag does not match transport identity; check tag serialization");
-    uint32_t node = device->GetNode()->GetId();
-    self->serviced_[node].insert(tag.GetId());
+    self->serviced_[node].insert(qp_key);
     uint32_t header = CustomHeader::GetStaticWholeHeaderSize();
     NS_ASSERT_MSG(packet->GetSize() >= header, "invalid native data packet size");
     self->payload_attempt_bytes_[node] += packet->GetSize() - header;
