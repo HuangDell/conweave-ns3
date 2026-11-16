@@ -13,6 +13,11 @@
 
 namespace nlb {
 
+// Round once at the input boundary; Seconds(double) can truncate by one tick.
+inline uint64_t RoundedSecondsToNs(double seconds) {
+    return static_cast<uint64_t>(std::llround(seconds * 1000000000.0));
+}
+
 namespace LbMode {
 constexpr uint32_t kEcmp = 0;
 constexpr uint32_t kDrill = 2;
@@ -244,7 +249,7 @@ struct ExperimentConfig {
     // Share an integer-nanosecond epoch across monitoring and resource feedback.
     // Seconds(double) can truncate a nominal nanosecond boundary by one tick.
     uint64_t FlowgenStartNs() const {
-        return static_cast<uint64_t>(std::llround(flowgen_start_time * 1000000000.0));
+        return RoundedSecondsToNs(flowgen_start_time);
     }
     double simulator_extra_time = 0.1;
     double error_rate_per_link = 0.0;

@@ -36,6 +36,7 @@ class TrafficScheduler {
         uint32_t max_packet_count = 0;
         uint32_t port = 0;
         double start_time = 0;
+        uint64_t start_time_ns = 0;
         uint32_t idx = 0;
     };
 

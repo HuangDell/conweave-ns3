@@ -977,6 +977,7 @@ void TrafficScheduler::ReadFlowInput() {
     if (flow_input_.idx < flow_count_) {
         flow_file_ >> flow_input_.src >> flow_input_.dst >> flow_input_.pg >>
             flow_input_.max_packet_count >> flow_input_.start_time;
+        flow_input_.start_time_ns = RoundedSecondsToNs(flow_input_.start_time);
         assert(state_.nodes.Get(flow_input_.src)->GetNodeType() == 0 &&
                state_.nodes.Get(flow_input_.dst)->GetNodeType() == 0);
     } else {
@@ -990,7 +991,7 @@ void TrafficScheduler::ReadFlowInput() {
 void TrafficScheduler::ScheduleFlowInputs() {
     NS_LOG_DEBUG("ScheduleFlowInputs at " << Simulator::Now());
     while (flow_input_.idx < flow_count_ &&
-           Seconds(flow_input_.start_time) == Simulator::Now()) {
+           NanoSeconds(flow_input_.start_time_ns) == Simulator::Now()) {
         uint32_t target_length = flow_input_.max_packet_count;
         if (target_length == 0) {
             target_length = 1;
@@ -1089,7 +1090,7 @@ void TrafficScheduler::ScheduleFlowInputs() {
     }
 
     if (flow_input_.idx < flow_count_) {
-        Simulator::Schedule(Seconds(flow_input_.start_time) - Simulator::Now(),
+        Simulator::Schedule(NanoSeconds(flow_input_.start_time_ns) - Simulator::Now(),
                             &TrafficScheduler::ScheduleFlowInputs, this);
     } else {
         flow_file_.close();
