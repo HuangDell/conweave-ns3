@@ -270,7 +270,9 @@ uint32_t RdmaHw::ApplyOdinMultiHopResourceFeedback(
     // Update the full resource cache before executing any CC or data decision.
     std::set<OdinResourceKey> seen_keys;
     for (const auto& s : samples) {
-        OdinResourceKey key{s.switch_id, s.interface};
+        OdinResourceKey key;
+        key.switch_id = s.switch_id;
+        key.interface = s.interface;
         NS_ABORT_MSG_IF(!s.line_bps || s.measured_ns <= s.window_start_ns ||
                         s.measured_ns > now || !seen_keys.insert(key).second,
                         "invalid multi-hop resource observation");
@@ -287,7 +289,11 @@ uint32_t RdmaHw::ApplyOdinMultiHopResourceFeedback(
                             tbo_it->second.measured_ns != s.measured_ns,
                             "inconsistent switch TBO in same epoch");
         } else {
-            m_odinSwitchTboCache[s.switch_id] = OdinSwitchTboState{s.tbo, version, s.measured_ns};
+            OdinSwitchTboState state;
+            state.tbo = s.tbo;
+            state.epoch = version;
+            state.measured_ns = s.measured_ns;
+            m_odinSwitchTboCache[s.switch_id] = state;
         }
     }
 

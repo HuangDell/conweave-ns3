@@ -146,7 +146,10 @@ void HostResourceLb::VerifyTuplePath(uint32_t src, uint32_t dst, uint16_t sport,
                             << sw_id << " predicted port " << actual_port << " != expected "
                             << expected_port << " (sport=" << sport << ", dport=" << dport << ")");
         if (out_resources) {
-            out_resources->push_back(RdmaHw::OdinResourceKey{sw_id, expected_port});
+            RdmaHw::OdinResourceKey resource;
+            resource.switch_id = sw_id;
+            resource.interface = expected_port;
+            out_resources->push_back(resource);
         }
         if (out_flow_path) {
             out_flow_path->allowed_switch_ports.insert(std::make_pair(sw_id, expected_port));
@@ -304,7 +307,11 @@ void HostResourceLb::AddPendingTargetMessage(uint32_t flow_id, uint32_t src, uin
     while (offset < bytes) {
         uint32_t len = static_cast<uint32_t>(
             std::min<uint64_t>(config_.hrlb.chunk_bytes, bytes - offset));
-        msg.pending_chunks.push_back(PendingChunk{chunk_id, offset, len});
+        PendingChunk chunk;
+        chunk.chunk_id = chunk_id;
+        chunk.offset = offset;
+        chunk.bytes = len;
+        msg.pending_chunks.push_back(chunk);
         offset += len;
         ++chunk_id;
     }

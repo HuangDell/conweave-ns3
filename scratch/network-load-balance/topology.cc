@@ -155,8 +155,8 @@ bool TopologyManager::Build(SimulationMonitor& monitor) {
             DynamicCast<QbbChannel>(destination_device->GetChannel())->GetDelay().GetTimeStep();
         destination_interface.bw = destination_device->GetDataRate().GetBitRate();
 
-        char ip_string[16];
-        sprintf(ip_string, "10.%d.%d.0", i / 254 + 1, i % 254 + 1);
+        char ip_string[32];
+        snprintf(ip_string, sizeof(ip_string), "10.%u.%u.0", i / 254 + 1, i % 254 + 1);
         ipv4.SetBase(ip_string, "255.255.255.0");
         ipv4.Assign(devices);
 
