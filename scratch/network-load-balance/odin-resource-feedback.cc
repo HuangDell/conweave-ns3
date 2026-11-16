@@ -67,7 +67,7 @@ bool OdinResourceFeedback::Start() {
     hardware_->m_odinResourceFeedback = true;
     hardware_->m_odinResourceStartNs = c.odin_resource_start_ns;
     hardware_->m_odinResourceWindowNs = c.odin_resource_window_ns;
-    uint64_t start = Seconds(config_.flowgen_start_time).GetNanoSeconds();
+    uint64_t start = config_.FlowgenStartNs();
     if (c.odin_resource_start_ns < start + c.odin_resource_window_ns) return false;
     uint64_t accum_start = multihop ? (c.odin_resource_start_ns - c.odin_resource_window_ns) : start;
     if ((c.odin_resource_start_ns - accum_start) % c.odin_resource_period_ns) return false;

@@ -358,10 +358,10 @@ void SimulationMonitor::StartPeriodicMonitoring() {
     periodic_started_ = true;
     if (config_.monitoring.native_diag_log) {
         NativePathDiagnostics::Start(
-            Seconds(config_.flowgen_start_time),
+            NanoSeconds(config_.FlowgenStartNs()),
             Seconds(config_.flowgen_stop_time + config_.simulator_extra_time));
     }
-    Simulator::Schedule(Seconds(config_.flowgen_start_time),
+    Simulator::Schedule(NanoSeconds(config_.FlowgenStartNs()),
                         &SimulationMonitor::MonitorPeriodic, this);
     if (host_path_sensing_) {
         host_path_sensing_->Start();
@@ -370,7 +370,7 @@ void SimulationMonitor::StartPeriodicMonitoring() {
 
 void SimulationMonitor::StartCompletionMonitoring(uint64_t target_completion_count) {
     target_completion_count_ = target_completion_count;
-    Simulator::Schedule(Seconds(config_.flowgen_start_time),
+    Simulator::Schedule(NanoSeconds(config_.FlowgenStartNs()),
                         &SimulationMonitor::MonitorCompletion, this);
 }
 

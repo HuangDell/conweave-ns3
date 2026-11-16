@@ -3,6 +3,7 @@
 
 #include <ns3/core-module.h>
 
+#include <cmath>
 #include <cstdint>
 #include <string>
 #include <set>
@@ -240,6 +241,11 @@ struct ExperimentConfig {
     uint32_t packet_payload_size = 1000;
     double flowgen_start_time = 2.0;
     double flowgen_stop_time = 2.5;
+    // Share an integer-nanosecond epoch across monitoring and resource feedback.
+    // Seconds(double) can truncate a nominal nanosecond boundary by one tick.
+    uint64_t FlowgenStartNs() const {
+        return static_cast<uint64_t>(std::llround(flowgen_start_time * 1000000000.0));
+    }
     double simulator_extra_time = 0.1;
     double error_rate_per_link = 0.0;
     uint32_t buffer_size_mb = 0;
