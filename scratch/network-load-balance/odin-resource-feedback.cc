@@ -40,7 +40,7 @@ bool OdinResourceFeedback::Start() {
             if (!mh_driver || !mh_driver->m_rdma) return false;
             mh_driver->m_rdma->m_odinResourceFeedback = true;
             mh_driver->m_rdma->m_odinResourceStartNs = c.odin_resource_start_ns;
-            mh_driver->m_odinResourceWindowNs = c.odin_resource_window_ns;
+            mh_driver->m_rdma->m_odinResourceWindowNs = c.odin_resource_window_ns;
             multihop_hardwares_.push_back(std::make_pair(hid, mh_driver->m_rdma));
         }
         for (const auto& res : multihop_resources_) {
