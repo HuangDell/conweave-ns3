@@ -813,7 +813,7 @@ def main():
         raise Exception("CONFIG ERROR : --v5_qp_pool must be 0 or 1")
     if args.v5_qp_pool_size < 1:
         raise Exception("CONFIG ERROR : --v5_qp_pool_size must be >= 1")
-    if args.v5_qp_pool and args.v5_qp_pool_size != args.v5_nsub:
+    if args.v5_qp_pool and not args.hrlb_enable and args.v5_qp_pool_size != args.v5_nsub:
         raise Exception("CONFIG ERROR : persistent pool currently requires --v5_qp_pool_size == --v5_nsub")
     if v5_policy in {"online-proportional", "queue-ecn-binary", "seqbalance-style"} and (
             args.lb != "letflow" or not args.v5_qp_pool or args.v5_chunk_bytes <= 0):
