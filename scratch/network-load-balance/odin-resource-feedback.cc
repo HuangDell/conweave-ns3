@@ -25,8 +25,24 @@ bool OdinResourceFeedback::Start() {
     Ptr<RdmaDriver> driver = host->GetObject<RdmaDriver>();
     if (!driver) return false;
     hardware_ = driver->m_rdma;
+    multihop_hardwares_.clear();
 
     if (multihop) {
+        std::vector<uint32_t> host_ids = multihop_hosts_;
+        if (host_ids.empty()) {
+            host_ids.push_back(c.odin_resource_host);
+        }
+        for (uint32_t hid : host_ids) {
+            if (hid >= state_.nodes.GetN()) return false;
+            Ptr<Node> mh_node = state_.nodes.Get(hid);
+            if (mh_node->GetNodeType() != 0) return false;
+            Ptr<RdmaDriver> mh_driver = mh_node->GetObject<RdmaDriver>();
+            if (!mh_driver || !mh_driver->m_rdma) return false;
+            mh_driver->m_rdma->m_odinResourceFeedback = true;
+            mh_driver->m_rdma->m_odinResourceStartNs = c.odin_resource_start_ns;
+            mh_driver->m_odinResourceWindowNs = c.odin_resource_window_ns;
+            multihop_hardwares_.push_back(std::make_pair(hid, mh_driver->m_rdma));
+        }
         for (const auto& res : multihop_resources_) {
             if (res.switch_id >= state_.nodes.GetN()) return false;
             Ptr<SwitchNode> sw = DynamicCast<SwitchNode>(state_.nodes.Get(res.switch_id));
@@ -111,7 +127,7 @@ void OdinResourceFeedback::Tick() {
     }
     if (!samples.empty()) {
         NS_ABORT_MSG_IF(samples.size() != ports_.size(), "incomplete resource frame");
-        Write("generated", ++version_, samples, 0);
+        WriteForHost("generated", config_.cc.odin_resource_host, ++version_, samples, 0);
         Simulator::Schedule(NanoSeconds(c.odin_resource_delay_ns),
                             &OdinResourceFeedback::Deliver, this, version_, samples);
     }
@@ -120,19 +136,24 @@ void OdinResourceFeedback::Tick() {
 }
 
 void OdinResourceFeedback::Deliver(uint64_t version, std::vector<OdinResourceSample> samples) {
-    uint32_t eligible = config_.hrlb.enable
-                            ? hardware_->ApplyOdinMultiHopResourceFeedback(version, samples)
-                            : hardware_->ApplyOdinResourceFeedback(version, samples);
-    Write("delivered", version, samples, eligible);
+    if (config_.hrlb.enable) {
+        for (const auto& entry : multihop_hardwares_) {
+            uint32_t eligible = entry.second->ApplyOdinMultiHopResourceFeedback(version, samples);
+            WriteForHost("delivered", entry.first, version, samples, eligible);
+        }
+    } else {
+        uint32_t eligible = hardware_->ApplyOdinResourceFeedback(version, samples);
+        WriteForHost("delivered", config_.cc.odin_resource_host, version, samples, eligible);
+    }
 }
 
-void OdinResourceFeedback::Write(const char* event, uint64_t version,
+void OdinResourceFeedback::WriteForHost(const char* event, uint32_t host_id, uint64_t version,
     const std::vector<OdinResourceSample>& samples, uint32_t eligible) {
     if (!output_) return;
     for (const auto& s : samples)
         fprintf(output_, "%lu,%s,%lu,%u,%u,%u,%u,%lu,%lu,%lu,%lu,%lu,%u,%u,%lu,%lu\n",
                 Simulator::Now().GetNanoSeconds(), event, version,
-                config_.cc.odin_resource_host, s.switch_id, s.interface,
+                host_id, s.switch_id, s.interface,
                 s.destination_ip ? Settings::ip_to_node_id(Ipv4Address(s.destination_ip)) : 0,
                 s.window_start_ns, s.measured_ns, s.delta_bytes, s.line_bps,
                 s.queue_bytes, s.tbo ? 1 : 0, eligible, s.begin_tx_bytes, s.end_tx_bytes);

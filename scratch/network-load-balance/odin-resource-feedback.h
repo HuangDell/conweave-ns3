@@ -20,6 +20,9 @@ class OdinResourceFeedback {
     void SetMultiHopResources(const std::set<ns3::RdmaHw::OdinResourceKey>& resources) {
         multihop_resources_ = resources;
     }
+    void SetMultiHopHosts(const std::vector<uint32_t>& hosts) {
+        multihop_hosts_ = hosts;
+    }
     bool Start();
     void Close();
 
@@ -32,11 +35,13 @@ class OdinResourceFeedback {
     };
     void Tick();
     void Deliver(uint64_t version, std::vector<ns3::OdinResourceSample> samples);
-    void Write(const char* event, uint64_t version,
-               const std::vector<ns3::OdinResourceSample>& samples, uint32_t eligible);
+    void WriteForHost(const char* event, uint32_t host_id, uint64_t version,
+                      const std::vector<ns3::OdinResourceSample>& samples, uint32_t eligible);
     const ExperimentConfig& config_;
     SimulationState& state_;
     std::set<ns3::RdmaHw::OdinResourceKey> multihop_resources_;
+    std::vector<uint32_t> multihop_hosts_;
+    std::vector<std::pair<uint32_t, ns3::Ptr<ns3::RdmaHw>>> multihop_hardwares_;
     ns3::Ptr<ns3::SwitchNode> tor_;
     ns3::Ptr<ns3::RdmaHw> hardware_;
     std::vector<Port> ports_;

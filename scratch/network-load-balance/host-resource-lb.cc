@@ -161,15 +161,32 @@ void HostResourceLb::VerifyTuplePath(uint32_t src, uint32_t dst, uint16_t sport,
 bool HostResourceLb::Initialize() {
     if (!IsEnabled()) return true;
     monitored_resources_.clear();
+    resource_hosts_.clear();
     expected_flow_paths_.clear();
     connected_hosts_.clear();
+    std::set<uint32_t> host_set;
 
     for (const auto& kv : bg_specs_) {
         const BgTupleSpec& bg = kv.second;
         ExpectedFlowPath flow_path;
         flow_path.is_target = false;
+        std::vector<RdmaHw::OdinResourceKey> bg_resources;
         VerifyTuplePath(bg.src, bg.dst, bg.sport, bg.dport, static_cast<uint16_t>(bg.pg),
-                        bg.expected_hops, nullptr, &flow_path);
+                        bg.expected_hops,
+                        config_.hrlb.bg_resource_feedback ? &bg_resources : nullptr,
+                        &flow_path);
+        if (config_.hrlb.bg_resource_feedback) {
+            for (const auto& res : bg_resources) {
+                monitored_resources_.insert(res);
+            }
+            Ptr<RdmaDriver> bg_driver = state_.nodes.Get(bg.src)->GetObject<RdmaDriver>();
+            uint64_t bg_qp_key = RdmaHw::GetQpKey(
+                state_.server_addresses[bg.dst].Get(), bg.sport, bg.dport,
+                static_cast<uint16_t>(bg.pg));
+            bg_driver->m_rdma->RegisterOdinResourcePath(
+                bg_qp_key, 0, config_.hrlb.mapping_version, bg_resources);
+            host_set.insert(bg.src);
+        }
         FiveTupleKey key(state_.server_addresses[bg.src].Get(),
                          state_.server_addresses[bg.dst].Get(), bg.sport, bg.dport,
                          static_cast<uint16_t>(bg.pg));
@@ -187,6 +204,7 @@ bool HostResourceLb::Initialize() {
             for (const auto& res : tg.resources) {
                 monitored_resources_.insert(res);
             }
+            host_set.insert(tg.src);
             FiveTupleKey key(state_.server_addresses[tg.src].Get(),
                              state_.server_addresses[tg.dst].Get(), tg.sport, tg.dport,
                              static_cast<uint16_t>(tg.pg));
@@ -206,6 +224,7 @@ bool HostResourceLb::Initialize() {
             }
         }
     }
+    resource_hosts_.assign(host_set.begin(), host_set.end());
 
     // Connect runtime hop verification to all switch egress devices.
     for (uint32_t i = 0; i < state_.nodes.GetN(); ++i) {
@@ -320,11 +339,26 @@ void HostResourceLb::AddPendingTargetMessage(uint32_t flow_id, uint32_t src, uin
                     "target message has fewer chunks than K bootstrap lanes");
 
     msg.lanes.resize(config_.hrlb.k);
+    std::map<RdmaHw::OdinResourceKey, uint32_t> res_freq;
     for (uint32_t l = 0; l < config_.hrlb.k; ++l) {
         msg.lanes[l].spec = lane_specs[l];
         msg.lanes[l].qp_key = RdmaHw::GetQpKey(state_.server_addresses[dst].Get(),
                                                lane_specs[l].sport, lane_specs[l].dport,
                                                static_cast<uint16_t>(pg));
+        for (const auto& res : lane_specs[l].resources) {
+            res_freq[res] += 1;
+        }
+    }
+    for (uint32_t l = 0; l < config_.hrlb.k; ++l) {
+        msg.lanes[l].div_resources.clear();
+        for (const auto& res : lane_specs[l].resources) {
+            if (res_freq[res] < config_.hrlb.k) {
+                msg.lanes[l].div_resources.push_back(res);
+            }
+        }
+        if (msg.lanes[l].div_resources.empty()) {
+            msg.lanes[l].div_resources = lane_specs[l].resources;
+        }
     }
 
     NS_ABORT_MSG_IF(!messages_.emplace(msg_id, std::move(msg)).second, "duplicate message_id");
@@ -482,25 +516,120 @@ bool HostResourceLb::TryCommitOneChunk(MessageState& msg, const char* trigger, u
                                                   [state_.nodes.Get(msg.dst)])
                           : 0;
 
+    bool redirect_active = (config_.hrlb.policy == "redirect") && (config_.hrlb.redirect != 0);
+    bool coord_active = (config_.hrlb.policy == "coord") && (config_.hrlb.redirect != 0);
+
     std::vector<bool> fresh(k, false);
     std::vector<double> scores(k, 0.0);
     std::vector<uint64_t> versions(k, 0);
     std::vector<uint64_t> ages(k, 0);
+    std::vector<uint64_t> backlog_bytes(k, 0);
+    std::vector<uint64_t> rate_bps(k, 1);
     for (uint32_t l = 0; l < k; ++l) {
         bool tbo = false;
         const char* r = nullptr;
-        fresh[l] = driver->m_rdma->QueryOdinPathScore(msg.lanes[l].qp_key, base_rtt, &scores[l],
-                                                      &tbo, &ages[l], &versions[l], nullptr, &r);
+        if (coord_active) {
+            fresh[l] = driver->m_rdma->QueryOdinResourceSetScore(
+                msg.lanes[l].div_resources, config_.hrlb.mapping_version, base_rtt, &scores[l],
+                &tbo, &ages[l], &versions[l], nullptr, &r);
+        } else {
+            fresh[l] = driver->m_rdma->QueryOdinPathScore(msg.lanes[l].qp_key, base_rtt,
+                                                          &scores[l], &tbo, &ages[l], &versions[l],
+                                                          nullptr, &r);
+        }
+        if (msg.lanes[l].qp) {
+            backlog_bytes[l] =
+                msg.lanes[l].qp->GetBytesLeft() + msg.lanes[l].qp->GetOnTheFly();
+            rate_bps[l] = std::max<uint64_t>(1, msg.lanes[l].qp->m_rate.GetBitRate());
+        }
     }
 
-    bool redirect_active = (config_.hrlb.policy == "redirect") && (config_.hrlb.redirect != 0);
+    bool logged_tail_hold = false;
     for (auto it = msg.pending_chunks.begin(); it != msg.pending_chunks.end(); ++it) {
         uint32_t nominal = (msg.message_id + it->chunk_id) % k;
         uint32_t chosen = nominal;
         bool is_redirect = false;
+        bool hold_tail = false;
         const char* reason = "nominal";
 
-        if (redirect_active) {
+        if (coord_active) {
+            if (!fresh[nominal]) {
+                reason = "source_unknown_fallback";
+            } else {
+                std::vector<double> t_fin(k, 0.0);
+                double min_all_div = std::numeric_limits<double>::infinity();
+                double min_all_t = std::numeric_limits<double>::infinity();
+                for (uint32_t l = 0; l < k; ++l) {
+                    t_fin[l] = static_cast<double>(backlog_bytes[l] + it->bytes) * 8.0 /
+                               static_cast<double>(rate_bps[l]);
+                    if (fresh[l]) {
+                        min_all_div = std::min(min_all_div, scores[l]);
+                        min_all_t = std::min(min_all_t, t_fin[l]);
+                    }
+                }
+                bool nom_has_slot = (msg.lanes[nominal].outstanding_wqes < d);
+                bool nom_div_ok = (scores[nominal] <= min_all_div + config_.hrlb.coord_delta_psi);
+                bool nom_t_ok = (t_fin[nominal] <= (1.0 + config_.hrlb.coord_eps_t) * min_all_t);
+
+                if (nom_has_slot && nom_div_ok && nom_t_ok) {
+                    chosen = nominal;
+                    reason = "coord_nominal_ok";
+                } else {
+                    uint32_t best_tier1 = k;
+                    double best_tier1_t = std::numeric_limits<double>::infinity();
+                    for (uint32_t offset = 0; offset < k; ++offset) {
+                        uint32_t cand = (msg.target_cursor + offset) % k;
+                        if (!fresh[cand] || msg.lanes[cand].outstanding_wqes >= d) continue;
+                        if (scores[cand] <= min_all_div + config_.hrlb.coord_delta_psi &&
+                            t_fin[cand] < best_tier1_t) {
+                            best_tier1_t = t_fin[cand];
+                            best_tier1 = cand;
+                        }
+                    }
+                    if (best_tier1 < k) {
+                        chosen = best_tier1;
+                        is_redirect = (chosen != nominal);
+                        reason = is_redirect ? "coord_redirect_tier1" : "coord_nominal_tier1";
+                    } else {
+                        uint32_t best_tier2 = k;
+                        double best_tier2_t = std::numeric_limits<double>::infinity();
+                        for (uint32_t offset = 0; offset < k; ++offset) {
+                            uint32_t cand = (msg.target_cursor + offset) % k;
+                            if (!fresh[cand] || msg.lanes[cand].outstanding_wqes >= d) continue;
+                            bool lighter =
+                                (scores[cand] < scores[nominal] - config_.hrlb.coord_delta_guard);
+                            bool faster = (t_fin[cand] < t_fin[nominal]);
+                            if ((lighter || faster) && t_fin[cand] < best_tier2_t) {
+                                best_tier2_t = t_fin[cand];
+                                best_tier2 = cand;
+                            }
+                        }
+                        if (best_tier2 < k) {
+                            chosen = best_tier2;
+                            is_redirect = (chosen != nominal);
+                            reason = is_redirect ? "coord_redirect_tier2" : "coord_nominal_tier2";
+                        } else if (nom_has_slot) {
+                            bool fast_full_exists = false;
+                            for (uint32_t l = 0; l < k; ++l) {
+                                if (!fresh[l] || msg.lanes[l].outstanding_wqes < d) continue;
+                                if (t_fin[l] * (1.0 + config_.hrlb.coord_eps_t) < t_fin[nominal] &&
+                                    scores[l] <= scores[nominal] + config_.hrlb.coord_delta_guard) {
+                                    fast_full_exists = true;
+                                    break;
+                                }
+                            }
+                            if (fast_full_exists) {
+                                hold_tail = true;
+                                reason = "coord_tail_guard_hold";
+                            } else {
+                                chosen = nominal;
+                                reason = "coord_nominal_fallback";
+                            }
+                        }
+                    }
+                }
+            }
+        } else if (redirect_active) {
             if (!fresh[nominal]) {
                 reason = "source_unknown_fallback";
             } else if (scores[nominal] > config_.hrlb.theta) {
@@ -538,7 +667,7 @@ bool HostResourceLb::TryCommitOneChunk(MessageState& msg, const char* trigger, u
             }
         }
 
-        if (msg.lanes[chosen].outstanding_wqes < d) {
+        if (!hold_tail && msg.lanes[chosen].outstanding_wqes < d) {
             PendingChunk chunk = *it;
             msg.pending_chunks.erase(it);
             LaneState& ls = msg.lanes[chosen];
@@ -558,6 +687,11 @@ bool HostResourceLb::TryCommitOneChunk(MessageState& msg, const char* trigger, u
                         scores, versions, ages, slots_before, ls.outstanding_wqes, cursor_before,
                         msg.target_cursor, reason);
             return true;
+        } else if (hold_tail && !logged_tail_hold) {
+            uint32_t slots = msg.lanes[nominal].outstanding_wqes;
+            LogDecision(seq, trigger, "blocked", msg, *it, nominal, nominal, false, fresh, scores,
+                        versions, ages, slots, slots, msg.target_cursor, msg.target_cursor, reason);
+            logged_tail_hold = true;
         } else if (redirect_active && fresh[nominal] && scores[nominal] > config_.hrlb.theta) {
             uint32_t slots = msg.lanes[chosen].outstanding_wqes;
             LogDecision(seq, trigger, "blocked", msg, *it, nominal, chosen, false, fresh, scores,

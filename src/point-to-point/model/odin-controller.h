@@ -18,6 +18,8 @@ class OdinController {
     };
     void Register(uint64_t key, uint64_t rate, uint64_t capacity);
     void Remove(uint64_t key);
+    Update PreviewFeedback(uint64_t key, double psi, bool tbo, double eta,
+                           double gamma, uint64_t beta, uint64_t minimum) const;
     Update OnFeedback(uint64_t key, double psi, bool tbo, double eta,
                       double gamma, uint64_t beta, uint64_t minimum);
     uint64_t Sum() const { return sum_; }

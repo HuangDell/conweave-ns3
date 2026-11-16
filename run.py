@@ -435,6 +435,9 @@ def validate_odin_options(args):
                              '--v5_nsub 1 --v5_chunk_bytes 0 --odin-resource-feedback 1, PFC=1, IRN=0')
         if (args.hrlb_k < 1 or args.hrlb_chunk_bytes < 1 or args.hrlb_depth < 1 or
                 not math.isfinite(args.hrlb_theta) or args.hrlb_theta <= 0 or
+                not math.isfinite(args.hrlb_coord_delta_psi) or args.hrlb_coord_delta_psi < 0 or
+                not math.isfinite(args.hrlb_coord_eps_t) or args.hrlb_coord_eps_t < 0 or
+                not math.isfinite(args.hrlb_coord_delta_guard) or args.hrlb_coord_delta_guard < 0 or
                 args.hrlb_freshness_ns < 0 or not args.hrlb_tuple_file):
             raise ValueError('Invalid HRLB parameters or missing --hrlb-tuple-file')
     elif (args.lb != 'fecmp' or args.v5_qp_pool or args.v5_nsub != 1 or
@@ -656,7 +659,7 @@ def main():
     parser.add_argument('--odin-resource-start-ns', type=int, default=2001000000)
     parser.add_argument('--flowgen-start-time', type=float, default=FLOWGEN_DEFAULT_TIME)
     parser.add_argument('--hrlb-enable', type=int, choices=(0, 1), default=0)
-    parser.add_argument('--hrlb-policy', choices=('uniform', 'redirect'), default='uniform')
+    parser.add_argument('--hrlb-policy', choices=('uniform', 'redirect', 'coord'), default='uniform')
     parser.add_argument('--hrlb-redirect', type=int, choices=(0, 1), default=0)
     parser.add_argument('--hrlb-k', type=int, default=4)
     parser.add_argument('--hrlb-chunk-bytes', type=int, default=64000)
@@ -665,6 +668,11 @@ def main():
     parser.add_argument('--hrlb-freshness-ns', type=int, default=16000)
     parser.add_argument('--hrlb-mapping-version', type=int, default=1)
     parser.add_argument('--hrlb-decision-log', type=int, choices=(0, 1), default=0)
+    parser.add_argument('--hrlb-gate-inflight0', type=int, choices=(0, 1), default=0)
+    parser.add_argument('--hrlb-bg-resource-feedback', type=int, choices=(0, 1), default=0)
+    parser.add_argument('--hrlb-coord-delta-psi', type=float, default=0.10)
+    parser.add_argument('--hrlb-coord-eps-t', type=float, default=0.25)
+    parser.add_argument('--hrlb-coord-delta-guard', type=float, default=0.05)
     parser.add_argument('--hrlb-tuple-file', default=None)
     parser.add_argument('--packet-payload-bytes', type=int, default=1000)
     parser.add_argument('--link-delay-ns', type=int, default=1000)
@@ -1165,6 +1173,16 @@ def main():
                 f"HRLB_DECISION_OUTPUT_FILE mix/output/{config_ID}/{config_ID}_out_hrlb_decisions.csv\n"
                 f"HRLB_MESSAGE_OUTPUT_FILE mix/output/{config_ID}/{config_ID}_out_hrlb_messages.csv\n"
             )
+            if args.hrlb_gate_inflight0:
+                config += f"HRLB_GATE_INFLIGHT0 {args.hrlb_gate_inflight0}\n"
+            if args.hrlb_bg_resource_feedback:
+                config += f"HRLB_BG_RESOURCE_FEEDBACK {args.hrlb_bg_resource_feedback}\n"
+            if args.hrlb_policy == 'coord':
+                config += (
+                    f"HRLB_COORD_DELTA_PSI {args.hrlb_coord_delta_psi}\n"
+                    f"HRLB_COORD_EPS_T {args.hrlb_coord_eps_t}\n"
+                    f"HRLB_COORD_DELTA_GUARD {args.hrlb_coord_delta_guard}\n"
+                )
 
     config = config.replace('PACKET_PAYLOAD_SIZE 1000\n',
                             f'PACKET_PAYLOAD_SIZE {args.packet_payload_bytes}\n')
@@ -1290,6 +1308,11 @@ def main():
                 chunk_bytes=args.hrlb_chunk_bytes, depth=args.hrlb_depth, theta=args.hrlb_theta,
                 freshness_ns=args.hrlb_freshness_ns, mapping_version=args.hrlb_mapping_version,
                 decision_log=args.hrlb_decision_log,
+                gate_inflight0=args.hrlb_gate_inflight0,
+                bg_resource_feedback=args.hrlb_bg_resource_feedback,
+                coord_delta_psi=args.hrlb_coord_delta_psi,
+                coord_eps_t=args.hrlb_coord_eps_t,
+                coord_delta_guard=args.hrlb_coord_delta_guard,
                 odin_resource_log=(args.odin_log if args.odin_resource_log is None else args.odin_resource_log),
                 tuple_file=os.path.abspath(args.hrlb_tuple_file),
                 tuple_sha256=sha256_file(os.path.abspath(args.hrlb_tuple_file)))

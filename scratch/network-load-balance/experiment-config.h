@@ -112,6 +112,11 @@ struct HrlbConfig {
     uint32_t mapping_version = 1;
     uint32_t decision_log = 0;
     uint32_t odin_resource_log = 1;
+    uint32_t gate_inflight0 = 0;
+    uint32_t bg_resource_feedback = 0;
+    double coord_delta_psi = 0.10;
+    double coord_eps_t = 0.25;
+    double coord_delta_guard = 0.05;
 };
 
 struct CongestionControlConfig {

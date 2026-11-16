@@ -22,9 +22,9 @@ void OdinController::Remove(uint64_t key) {
     rates_.erase(it);
 }
 
-OdinController::Update OdinController::OnFeedback(
+OdinController::Update OdinController::PreviewFeedback(
     uint64_t key, double psi, bool tbo, double eta, double gamma,
-    uint64_t beta, uint64_t minimum) {
+    uint64_t beta, uint64_t minimum) const {
     auto it = rates_.find(key);
     if (it == rates_.end() || !std::isfinite(psi) || psi <= 0 ||
         !(eta > 0 && eta <= 1) || !(gamma > 0 && gamma <= 1) ||
@@ -59,10 +59,17 @@ OdinController::Update OdinController::OnFeedback(
         throw std::logic_error("non-finite Odin control state");
     r.rate = static_cast<uint64_t>(std::max(double(minimum),
                                            std::min(double(capacity_), rate)));
-    sum_ = sum_ - r.old_rate + r.rate;
-    it->second = r.rate;
+    r.sum_after = sum_ - r.old_rate + r.rate;
+    return r;
+}
+
+OdinController::Update OdinController::OnFeedback(
+    uint64_t key, double psi, bool tbo, double eta, double gamma,
+    uint64_t beta, uint64_t minimum) {
+    Update r = PreviewFeedback(key, psi, tbo, eta, gamma, beta, minimum);
+    rates_.at(key) = r.rate;
+    sum_ = r.sum_after;
     u_ = r.u_after;
-    r.sum_after = sum_;
     return r;
 }
 }  // namespace ns3

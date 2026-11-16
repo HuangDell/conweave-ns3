@@ -38,6 +38,16 @@ bool LoadExperimentConfig(const std::string& path, ExperimentConfig* config) {
             conf >> config->hrlb.mapping_version;
         } else if (key == "HRLB_DECISION_LOG") {
             conf >> config->hrlb.decision_log;
+        } else if (key == "HRLB_GATE_INFLIGHT0") {
+            conf >> config->hrlb.gate_inflight0;
+        } else if (key == "HRLB_BG_RESOURCE_FEEDBACK") {
+            conf >> config->hrlb.bg_resource_feedback;
+        } else if (key == "HRLB_COORD_DELTA_PSI") {
+            conf >> config->hrlb.coord_delta_psi;
+        } else if (key == "HRLB_COORD_EPS_T") {
+            conf >> config->hrlb.coord_eps_t;
+        } else if (key == "HRLB_COORD_DELTA_GUARD") {
+            conf >> config->hrlb.coord_delta_guard;
         } else if (key == "HRLB_TUPLE_FILE") {
             conf >> config->io.hrlb_tuple_file;
         } else if (key == "HRLB_DECISION_OUTPUT_FILE") {

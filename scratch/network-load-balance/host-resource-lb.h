@@ -34,6 +34,9 @@ class HostResourceLb {
     const std::set<ns3::RdmaHw::OdinResourceKey>& MonitoredResources() const {
         return monitored_resources_;
     }
+    const std::vector<uint32_t>& ResourceHosts() const {
+        return resource_hosts_;
+    }
 
     void AddPendingTargetMessage(uint32_t flow_id, uint32_t src, uint32_t dst, uint32_t pg,
                                  uint64_t bytes, double start_s);
@@ -78,6 +81,7 @@ class HostResourceLb {
         TgTupleSpec spec;
         uint64_t qp_key = 0;
         ns3::Ptr<ns3::RdmaQueuePair> qp;
+        std::vector<ns3::RdmaHw::OdinResourceKey> div_resources;
         uint32_t outstanding_wqes = 0;
         uint64_t scheduled_wqes = 0;
     };
@@ -134,6 +138,7 @@ class HostResourceLb {
     std::map<uint32_t, uint32_t> target_flow_to_msg_;
     std::map<uint32_t, std::vector<TgTupleSpec>> tg_specs_by_msg_;
     std::set<ns3::RdmaHw::OdinResourceKey> monitored_resources_;
+    std::vector<uint32_t> resource_hosts_;
     std::map<FiveTupleKey, ExpectedFlowPath> expected_flow_paths_;
     std::map<uint32_t, MessageState> messages_;
     std::vector<uint32_t> active_message_ids_;

@@ -64,6 +64,7 @@ class RdmaHw : public Object {
     void TraceOdin(Ptr<RdmaQueuePair> qp, OdinEvent event);
     bool m_odinResourceFeedback = false;
     bool m_odinAllowPersistent = false;
+    bool m_odinResourceGateInflight0 = false;
     uint64_t m_odinResourceStartNs = 0, m_odinResourceVersion = 0;
     uint64_t m_odinResourceWindowNs = 32000, m_odinResourceFreshnessNs = 16000;
     uint32_t m_odinExpectedMappingVersion = 1;
@@ -103,6 +104,11 @@ class RdmaHw : public Object {
     OdinResourceDeliveredCallback m_odinResourceDeliveredCallback;
     void RegisterOdinResourcePath(uint64_t qp_key, uint32_t path_id, uint32_t mapping_version,
                                   const std::vector<OdinResourceKey>& resources);
+    bool QueryOdinResourceSetScore(const std::vector<OdinResourceKey>& resources,
+                                   uint32_t mapping_version, uint64_t base_rtt_ns, double* score,
+                                   bool* tbo, uint64_t* max_age_ns, uint64_t* min_version,
+                                   OdinResourceSample* bottleneck_sample,
+                                   const char** reason) const;
     bool QueryOdinPathScore(uint64_t qp_key, uint64_t base_rtt_ns, double* score, bool* tbo,
                             uint64_t* max_age_ns, uint64_t* min_version,
                             OdinResourceSample* bottleneck_sample, const char** reason) const;

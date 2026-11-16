@@ -94,6 +94,7 @@ int main(int argc, char* argv[]) {
     nlb::OdinResourceFeedback resource_feedback(config, state);
     if (hrlb.IsEnabled()) {
         resource_feedback.SetMultiHopResources(hrlb.MonitoredResources());
+        resource_feedback.SetMultiHopHosts(hrlb.ResourceHosts());
     }
     if (!resource_feedback.Start()) {
         std::cerr << "Error: cannot start Odin resource feedback\n";

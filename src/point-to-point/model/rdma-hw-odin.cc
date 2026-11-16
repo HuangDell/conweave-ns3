@@ -180,10 +180,12 @@ void RdmaHw::RegisterOdinResourcePath(uint64_t qp_key, uint32_t path_id, uint32_
     m_odinResourcePaths[qp_key] = spec;
 }
 
-bool RdmaHw::QueryOdinPathScore(uint64_t qp_key, uint64_t base_rtt_ns, double* score,
-                                  bool* tbo, uint64_t* max_age_ns, uint64_t* min_version,
-                                  OdinResourceSample* bottleneck_sample,
-                                  const char** reason) const {
+bool RdmaHw::QueryOdinResourceSetScore(const std::vector<OdinResourceKey>& resources,
+                                         uint32_t mapping_version, uint64_t base_rtt_ns,
+                                         double* score, bool* tbo, uint64_t* max_age_ns,
+                                         uint64_t* min_version,
+                                         OdinResourceSample* bottleneck_sample,
+                                         const char** reason) const {
     *score = 0.0;
     *tbo = false;
     *max_age_ns = 0;
@@ -193,13 +195,11 @@ bool RdmaHw::QueryOdinPathScore(uint64_t qp_key, uint64_t base_rtt_ns, double* s
         if (reason) *reason = "invalid_rtt";
         return false;
     }
-    auto path_it = m_odinResourcePaths.find(qp_key);
-    if (path_it == m_odinResourcePaths.end() || path_it->second.resources.empty()) {
+    if (resources.empty()) {
         if (reason) *reason = "missing_path";
         return false;
     }
-    const OdinPathSpec& spec = path_it->second;
-    if (spec.mapping_version != m_odinExpectedMappingVersion) {
+    if (mapping_version != m_odinExpectedMappingVersion) {
         if (reason) *reason = "mapping_mismatch";
         return false;
     }
@@ -209,7 +209,7 @@ bool RdmaHw::QueryOdinPathScore(uint64_t qp_key, uint64_t base_rtt_ns, double* s
     uint64_t worst_age = 0;
     uint64_t oldest_epoch = std::numeric_limits<uint64_t>::max();
     OdinResourceSample worst_sample;
-    for (const auto& res_key : spec.resources) {
+    for (const auto& res_key : resources) {
         auto cached_it = m_odinResourceCache.find(res_key);
         if (cached_it == m_odinResourceCache.end()) {
             if (reason) *reason = "missing_resource";
@@ -257,6 +257,24 @@ bool RdmaHw::QueryOdinPathScore(uint64_t qp_key, uint64_t base_rtt_ns, double* s
     if (bottleneck_sample) *bottleneck_sample = worst_sample;
     if (reason) *reason = "fresh";
     return true;
+}
+
+bool RdmaHw::QueryOdinPathScore(uint64_t qp_key, uint64_t base_rtt_ns, double* score,
+                                  bool* tbo, uint64_t* max_age_ns, uint64_t* min_version,
+                                  OdinResourceSample* bottleneck_sample,
+                                  const char** reason) const {
+    auto path_it = m_odinResourcePaths.find(qp_key);
+    if (path_it == m_odinResourcePaths.end() || path_it->second.resources.empty()) {
+        *score = 0.0;
+        *tbo = false;
+        *max_age_ns = 0;
+        *min_version = 0;
+        if (reason) *reason = "missing_path";
+        return false;
+    }
+    const OdinPathSpec& spec = path_it->second;
+    return QueryOdinResourceSetScore(spec.resources, spec.mapping_version, base_rtt_ns, score, tbo,
+                                     max_age_ns, min_version, bottleneck_sample, reason);
 }
 
 uint32_t RdmaHw::ApplyOdinMultiHopResourceFeedback(
@@ -348,6 +366,17 @@ uint32_t RdmaHw::ApplyOdinMultiHopResourceFeedback(
             e.reason = "resource_zero_psi";
             TraceOdin(q, e);
             continue;
+        }
+        if (m_odinResourceGateInflight0 && q->m_persistent && q->GetOnTheFly() == 0) {
+            OdinController::Update preview = m_nic[q->odin.nic].odin.PreviewFeedback(
+                qp_key, psi, tbo, m_odinEta, m_odinGamma, m_odinBeta.GetBitRate(),
+                m_minRate.GetBitRate());
+            if (preview.rate < q->m_rate.GetBitRate()) {
+                e.event = "skip";
+                e.reason = "inflight0_no_decrease";
+                TraceOdin(q, e);
+                continue;
+            }
         }
         e.event = "sample";
         TraceOdin(q, e);
