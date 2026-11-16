@@ -66,9 +66,12 @@ class HostResourceLb {
     };
 
     struct PendingChunk {
-        uint32_t chunk_id = 0;
-        uint64_t offset = 0;
-        uint32_t bytes = 0;
+        uint32_t chunk_id;
+        uint64_t offset;
+        uint32_t bytes;
+        PendingChunk() : chunk_id(0), offset(0), bytes(0) {}
+        PendingChunk(uint32_t c, uint64_t o, uint32_t b)
+            : chunk_id(c), offset(o), bytes(b) {}
     };
 
     struct LaneState {

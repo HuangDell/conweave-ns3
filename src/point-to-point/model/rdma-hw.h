@@ -69,8 +69,10 @@ class RdmaHw : public Object {
     uint32_t m_odinExpectedMappingVersion = 1;
     std::set<uint32_t> m_odinResourceDestinations;
     struct OdinResourceKey {
-        uint32_t switch_id = 0;
-        uint32_t interface = 0;
+        uint32_t switch_id;
+        uint32_t interface;
+        OdinResourceKey() : switch_id(0), interface(0) {}
+        OdinResourceKey(uint32_t sw, uint32_t iface) : switch_id(sw), interface(iface) {}
         bool operator<(const OdinResourceKey& other) const {
             return switch_id != other.switch_id ? switch_id < other.switch_id
                                                  : interface < other.interface;
@@ -87,9 +89,12 @@ class RdmaHw : public Object {
         uint64_t received_ns = 0;
     };
     struct OdinSwitchTboState {
-        bool tbo = false;
-        uint64_t epoch = 0;
-        uint64_t measured_ns = 0;
+        bool tbo;
+        uint64_t epoch;
+        uint64_t measured_ns;
+        OdinSwitchTboState() : tbo(false), epoch(0), measured_ns(0) {}
+        OdinSwitchTboState(bool t, uint64_t e, uint64_t m)
+            : tbo(t), epoch(e), measured_ns(m) {}
     };
     std::map<uint64_t, OdinPathSpec> m_odinResourcePaths;
     std::map<OdinResourceKey, OdinCachedResource> m_odinResourceCache;

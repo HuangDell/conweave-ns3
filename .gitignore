@@ -8,6 +8,7 @@ analyze/raw_basic/*
 mix/output/*
 mix/*_flow.txt
 config/*_flow.txt
+config/v5/host_resource_lb/
 analysis/figures/*.pdf
 **/*.pyc
 .vscode
