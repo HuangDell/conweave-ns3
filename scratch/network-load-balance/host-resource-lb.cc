@@ -581,6 +581,7 @@ bool HostResourceLb::TryCommitOneChunk(MessageState& msg, const char* trigger, u
                         uint32_t cand = (msg.target_cursor + offset) % k;
                         if (!fresh[cand] || msg.lanes[cand].outstanding_wqes >= d) continue;
                         if (scores[cand] <= min_all_div + config_.hrlb.coord_delta_psi &&
+                            t_fin[cand] <= (1.0 + config_.hrlb.coord_eps_t) * min_all_t &&
                             t_fin[cand] < best_tier1_t) {
                             best_tier1_t = t_fin[cand];
                             best_tier1 = cand;
@@ -599,7 +600,12 @@ bool HostResourceLb::TryCommitOneChunk(MessageState& msg, const char* trigger, u
                             bool lighter =
                                 (scores[cand] < scores[nominal] - config_.hrlb.coord_delta_guard);
                             bool faster = (t_fin[cand] < t_fin[nominal]);
-                            if ((lighter || faster) && t_fin[cand] < best_tier2_t) {
+                            bool not_heavier =
+                                (scores[cand] <= scores[nominal] + config_.hrlb.coord_delta_guard);
+                            bool not_tail_slow =
+                                (t_fin[cand] <= (1.0 + config_.hrlb.coord_eps_t) * min_all_t);
+                            if ((lighter || faster) && not_heavier && not_tail_slow &&
+                                t_fin[cand] < best_tier2_t) {
                                 best_tier2_t = t_fin[cand];
                                 best_tier2 = cand;
                             }
