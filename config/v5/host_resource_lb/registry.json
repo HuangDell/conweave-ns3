@@ -1,0 +1,142 @@
+{
+  "version": "hrlb-v1",
+  "seed": 1,
+  "source": {
+    "parent": {
+      "revision": "8c598d4f4a34129dcb48a34b1ea92ae9a94a6622",
+      "dirty": true
+    },
+    "ns3": {
+      "revision": "9fd451085ccb7850a423ab2465c36f50b7c1edb2",
+      "dirty": false
+    }
+  },
+  "topology_sha256": "98b254ee941de2bc1c5a0cf2bb3898a4e3bf8d229650e06d64b01cd224808052",
+  "generator_sha256": "5f03fb7f06328f6eede5445f9ee8e4b2dbe7164d567a33caefe3e05d7bd68385",
+  "parameters": {
+    "rate_bps": 100000000000,
+    "payload_bytes": 4000,
+    "chunk_bytes": 64000,
+    "k": 4,
+    "depth": 2,
+    "theta": 1.0,
+    "cross_rtt_ns": 9280,
+    "same_rtt_ns": 4640,
+    "max_bdp_bytes": 116000,
+    "buffer_bytes": 9437184,
+    "interval_ns": 2000,
+    "period_ns": 8000,
+    "window_ns": 32000,
+    "delay_ns": 4000,
+    "freshness_ns": 16000,
+    "mapping_version": 1,
+    "t0_ns": 2000000000,
+    "flowgen_start_ns": 1999712000,
+    "first_frame_ns": 1999744000,
+    "timeout_ns": 200000000,
+    "odin": {
+      "eta": 0.95,
+      "gamma": 0.1,
+      "beta_mbps": 5.0,
+      "min_rate_mbps": 100.0,
+      "tbo_ratio": 0.0625
+    }
+  },
+  "protocol": {
+    "matrix": "smoke (U, D redirect-disabled), smoke-observe (U), 3 formal cases x (U, D)",
+    "stage_order": "prepare -> build once -> smoke -> smoke-observe -> pilot-u -> gate -> pilot-d",
+    "routing": "ECMP (LB_MODE=0) with deterministic tuple search verified against SwitchNode",
+    "control_channel": "Ideal multi-hop resource frame, 4us explicit delay, zero wire overhead",
+    "boundaries": "Seed 1, single pair 0->8, persistent local Odin, no aggregate rate budget formula"
+  },
+  "cases": {
+    "smoke": {
+      "flow_count": 1,
+      "target_messages": 1,
+      "target_qps": 4,
+      "target_chunks": 16,
+      "background_flows": 0,
+      "total_payload_bytes": 1024000,
+      "target_payload_bytes": 1024000,
+      "background_payload_bytes": 0,
+      "flow": {
+        "filename": "smoke.flow.txt",
+        "sha256": "75ed09bc6a14fa9dec1ed4afce278ec1ecfaad2e6de2875eade16957f616b411"
+      },
+      "job": {
+        "filename": "smoke.job.csv",
+        "sha256": "a77621a18fada860e6ec8730c77273995121c95561c5f66479dea4dd326346ae"
+      },
+      "tuples": {
+        "filename": "smoke.tuples.txt",
+        "sha256": "ae52b3c41f25690e969409581e073981c5dac3386b3a98701ed45a98791a9e4e"
+      }
+    },
+    "path-held": {
+      "flow_count": 24,
+      "target_messages": 8,
+      "target_qps": 32,
+      "target_chunks": 1024,
+      "background_flows": 16,
+      "total_payload_bytes": 327680000,
+      "target_payload_bytes": 65536000,
+      "background_payload_bytes": 262144000,
+      "flow": {
+        "filename": "path-held.flow.txt",
+        "sha256": "b14adeb040c075b2a0726d880be9f9f3ccf3aaf0fb7d562abcdbfe8a65a58b19"
+      },
+      "job": {
+        "filename": "path-held.job.csv",
+        "sha256": "dad2ff72e4047f208d84eceb648af94dd63f7ba2f2b81018a5d6ade82d579f3e"
+      },
+      "tuples": {
+        "filename": "path-held.tuples.txt",
+        "sha256": "e02d02ebd72cec6247926b000760bbea30aaf7f3a915e2e54a4dad3d5a0fcfa2"
+      }
+    },
+    "shared-held": {
+      "flow_count": 24,
+      "target_messages": 8,
+      "target_qps": 32,
+      "target_chunks": 1024,
+      "background_flows": 16,
+      "total_payload_bytes": 327680000,
+      "target_payload_bytes": 65536000,
+      "background_payload_bytes": 262144000,
+      "flow": {
+        "filename": "shared-held.flow.txt",
+        "sha256": "ca38b90dfcad4078ae3acb88c5cc5068383b76b8556f804105e3595f1494e064"
+      },
+      "job": {
+        "filename": "shared-held.job.csv",
+        "sha256": "dad2ff72e4047f208d84eceb648af94dd63f7ba2f2b81018a5d6ade82d579f3e"
+      },
+      "tuples": {
+        "filename": "shared-held.tuples.txt",
+        "sha256": "8043f628b3e24895796010e59f05ab45dd96d7713ed96d6ee8790a2f8458e43b"
+      }
+    },
+    "path-release": {
+      "flow_count": 24,
+      "target_messages": 8,
+      "target_qps": 32,
+      "target_chunks": 1024,
+      "background_flows": 16,
+      "total_payload_bytes": 81920000,
+      "target_payload_bytes": 65536000,
+      "background_payload_bytes": 16384000,
+      "flow": {
+        "filename": "path-release.flow.txt",
+        "sha256": "a5b092b61490b3bede8826511da103bc7512516033d1d4a29da6d89aaf4b0f58"
+      },
+      "job": {
+        "filename": "path-release.job.csv",
+        "sha256": "dad2ff72e4047f208d84eceb648af94dd63f7ba2f2b81018a5d6ade82d579f3e"
+      },
+      "tuples": {
+        "filename": "path-release.tuples.txt",
+        "sha256": "e02d02ebd72cec6247926b000760bbea30aaf7f3a915e2e54a4dad3d5a0fcfa2"
+      }
+    }
+  }
+}
