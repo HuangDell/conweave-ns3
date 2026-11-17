@@ -117,6 +117,14 @@ struct HrlbConfig {
     double coord_delta_psi = 0.10;
     double coord_eps_t = 0.25;
     double coord_delta_guard = 0.05;
+    // Defaults preserve frozen v1/v2 behavior; v3 opts in explicitly.
+    std::string coord_tail_mode = "all";
+    uint32_t coord_tail_chunks = 8;
+    uint32_t coord_tail_break = 0;
+    uint32_t coord_healthy_guard = 0;
+    uint32_t decision_dedup = 0;
+    uint32_t audit_log = 0;
+    uint32_t monitor_full_window = 0;
 };
 
 struct CongestionControlConfig {

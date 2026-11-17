@@ -160,6 +160,10 @@ void HostResourceLb::VerifyTuplePath(uint32_t src, uint32_t dst, uint16_t sport,
 
 bool HostResourceLb::Initialize() {
     if (!IsEnabled()) return true;
+    NS_ABORT_MSG_IF(config_.hrlb.coord_tail_mode != "off" &&
+                        config_.hrlb.coord_tail_mode != "all" &&
+                        config_.hrlb.coord_tail_mode != "drain", "invalid tail mode");
+    NS_ABORT_MSG_IF(config_.hrlb.coord_tail_chunks == 0, "tail chunk bound must be positive");
     monitored_resources_.clear();
     resource_hosts_.clear();
     expected_flow_paths_.clear();
@@ -220,7 +224,7 @@ bool HostResourceLb::Initialize() {
                 driver->TraceConnectWithoutContext(
                     "WqeEvent", MakeBoundCallback(&HostResourceLb::WqeEventCallback, this));
                 driver->m_rdma->m_odinResourceDeliveredCallback =
-                    MakeCallback(&HostResourceLb::OnResourceFrameDelivered, this);
+                    MakeBoundCallback(&HostResourceLb::ResourceDeliveredCallback, this, tg.src);
             }
         }
     }
@@ -252,13 +256,32 @@ bool HostResourceLb::Initialize() {
                 "time_ns,schedule_seq,epoch,trigger,event,message_id,chunk_id,offset,bytes,"
                 "nominal_lane,chosen_lane,is_redirect,source_fresh,source_score,target_fresh,"
                 "target_score,lane_scores,lane_fresh,resource_versions,resource_ages_ns,"
-                "slots_before,slots_after,cursor_before,cursor_after,reason\n");
+                "slots_before,slots_after,cursor_before,cursor_after,reason");
+        if (config_.hrlb.audit_log) {
+            fprintf(decision_output_, ",src,pending_chunks,completed_chunks,lane_slots,lane_rates_bps,"
+                                      "lane_unsent_bytes,lane_inflight_bytes,lane_next_avail_ns");
+        }
+        fprintf(decision_output_, "\n");
         fflush(decision_output_);
+    }
+    if (config_.hrlb.audit_log && config_.hrlb.decision_log) {
+        lane_output_ = fopen((config_.io.hrlb_decision_output_file + ".lanes.csv").c_str(), "w");
+        if (!lane_output_) return false;
+        fprintf(lane_output_, "time_ns,src,message_id,lane,pending_chunks,nominal_pending_chunks,slots,unsent_bytes,"
+                              "inflight_bytes,rate_bps,next_avail_ns,window_bound,paused,"
+                              "nic_busy,nic_busy_ns\n");
+        tail_output_ = fopen((config_.io.hrlb_decision_output_file + ".tail.csv").c_str(), "w");
+        if (!tail_output_) return false;
+        fprintf(tail_output_, "time_ns,event,schedule_seq,message_id,chunk_id,pending_chunks,"
+                             "committed_unsent_bytes,inflight_bytes,nominal_lane,chosen_lane,fast_lane_mask\n");
     }
     return true;
 }
 
 void HostResourceLb::Close() {
+    if (lane_sample_event_.IsRunning()) lane_sample_event_.Cancel();
+    if (lane_output_) { fclose(lane_output_); lane_output_ = NULL; }
+    if (tail_output_) { fclose(tail_output_); tail_output_ = NULL; }
     if (decision_output_) {
         fclose(decision_output_);
         decision_output_ = NULL;
@@ -399,6 +422,7 @@ void HostResourceLb::StartAddedMessages() {
 
         // Submit first K real chunks, one per lane, without notifying NIC yet.
         for (uint32_t c = 0; c < config_.hrlb.k; ++c) {
+            decision_state_ = DecisionState(msg);
             PendingChunk chunk = msg.pending_chunks.front();
             msg.pending_chunks.pop_front();
             uint32_t lane = (msg.message_id + chunk.chunk_id) % config_.hrlb.k;
@@ -429,7 +453,8 @@ void HostResourceLb::StartAddedMessages() {
         driver->NotifyPersistentQps(kv.second);
     }
 
-    RunSchedule("message_start");
+    for (const auto& kv : created_by_host) RunSchedule("message_start", kv.first);
+    if (lane_output_ && !lane_sample_event_.IsRunning()) SampleLanes();
 }
 
 void HostResourceLb::WqeEventCallback(HostResourceLb* self, Ptr<RdmaQueuePair> qp, uint32_t event,
@@ -461,44 +486,50 @@ void HostResourceLb::OnWqeComplete(Ptr<RdmaQueuePair> qp, RdmaQueuePair::WqeBoun
             fflush(message_output_);
         }
     }
-    if (!post_ack_scheduled_) {
-        post_ack_scheduled_ = true;
-        Simulator::ScheduleNow(&HostResourceLb::OnPostAck, this);
+    if (post_ack_hosts_.insert(msg.src).second) {
+        Simulator::ScheduleNow(&HostResourceLb::OnPostAck, this, msg.src);
     }
 }
 
-void HostResourceLb::OnPostAck() {
-    post_ack_scheduled_ = false;
-    RunSchedule("wqe_complete");
+void HostResourceLb::OnPostAck(uint32_t host) {
+    post_ack_hosts_.erase(host);
+    RunSchedule("wqe_complete", host);
 }
 
-void HostResourceLb::OnResourceFrameDelivered(uint64_t epoch) {
-    latest_delivered_epoch_ = epoch;
-    RunSchedule("resource_frame");
+void HostResourceLb::ResourceDeliveredCallback(HostResourceLb* self, uint32_t host, uint64_t epoch) {
+    self->OnResourceFrameDelivered(host, epoch);
 }
 
-void HostResourceLb::RunSchedule(const char* trigger) {
-    if (active_message_ids_.empty()) return;
+void HostResourceLb::OnResourceFrameDelivered(uint32_t host, uint64_t epoch) {
+    delivered_epochs_[host] = epoch;
+    RunSchedule("resource_frame", host);
+}
+
+void HostResourceLb::RunSchedule(const char* trigger, uint32_t host) {
+    std::vector<uint32_t> ids;
+    for (uint32_t mid : active_message_ids_) {
+        if (messages_.at(mid).src == host) ids.push_back(mid);
+    }
+    if (ids.empty()) return;
     uint64_t seq = ++schedule_seq_;
     bool any_progress = true;
+    size_t& rr_cursor = msg_rr_cursors_[host];
     while (any_progress) {
         any_progress = false;
-        size_t m = active_message_ids_.size();
-        size_t start = msg_rr_cursor_ % m;
-        size_t next_cursor = msg_rr_cursor_;
+        size_t m = ids.size();
+        size_t start = rr_cursor % m;
+        size_t next_cursor = rr_cursor;
         for (size_t step = 0; step < m; ++step) {
             size_t idx = (start + step) % m;
-            MessageState& msg = messages_.at(active_message_ids_[idx]);
-            if (msg.pending_chunks.empty()) continue;
+            MessageState& msg = messages_.at(ids[idx]);
+            if (msg.pending_chunks.empty() || msg.held_schedule_seq == seq) continue;
             if (TryCommitOneChunk(msg, trigger, seq)) {
                 any_progress = true;
                 next_cursor = (idx + 1) % m;
-                if (msg.pending_chunks.empty() && !msg.sealed) {
-                    SealMessage(msg);
-                }
+                if (msg.pending_chunks.empty() && !msg.sealed) SealMessage(msg);
             }
         }
-        msg_rr_cursor_ = next_cursor;
+        rr_cursor = next_cursor;
     }
 }
 
@@ -544,6 +575,7 @@ bool HostResourceLb::TryCommitOneChunk(MessageState& msg, const char* trigger, u
         }
     }
 
+    decision_state_ = DecisionState(msg);
     bool logged_tail_hold = false;
     for (auto it = msg.pending_chunks.begin(); it != msg.pending_chunks.end(); ++it) {
         uint32_t nominal = (msg.message_id + it->chunk_id) % k;
@@ -615,11 +647,17 @@ bool HostResourceLb::TryCommitOneChunk(MessageState& msg, const char* trigger, u
                             is_redirect = (chosen != nominal);
                             reason = is_redirect ? "coord_redirect_tier2" : "coord_nominal_tier2";
                         } else if (nom_has_slot) {
+                            bool tail_enabled = config_.hrlb.coord_tail_mode == "all" ||
+                                (config_.hrlb.coord_tail_mode == "drain" &&
+                                 msg.pending_chunks.size() <= config_.hrlb.coord_tail_chunks);
                             bool fast_full_exists = false;
                             for (uint32_t l = 0; l < k; ++l) {
                                 if (!fresh[l] || msg.lanes[l].outstanding_wqes < d) continue;
-                                if (t_fin[l] * (1.0 + config_.hrlb.coord_eps_t) < t_fin[nominal] &&
-                                    scores[l] <= scores[nominal] + config_.hrlb.coord_delta_guard) {
+                                bool healthy = config_.hrlb.coord_healthy_guard &&
+                                               scores[l] < config_.hrlb.theta;
+                                if (tail_enabled &&
+                                    t_fin[l] * (1.0 + config_.hrlb.coord_eps_t) < t_fin[nominal] &&
+                                    (healthy || scores[l] <= scores[nominal] + config_.hrlb.coord_delta_guard)) {
                                     fast_full_exists = true;
                                     break;
                                 }
@@ -673,6 +711,34 @@ bool HostResourceLb::TryCommitOneChunk(MessageState& msg, const char* trigger, u
             }
         }
 
+        // Independent passive transitions preserve residence times even when decision rows
+        // are deduplicated, or a later chunk is visited after an old-rule hold.
+        if (tail_output_) {
+            bool was_held = msg.observed_tail_holds.count(it->chunk_id) != 0;
+            if (hold_tail != was_held) {
+                uint64_t unsent = 0, inflight = 0;
+                uint32_t fast_mask = 0;
+                for (uint32_t l = 0; l < k; ++l) {
+                    unsent += msg.lanes[l].qp->GetBytesLeft();
+                    inflight += msg.lanes[l].qp->GetOnTheFly();
+                    double tf = static_cast<double>(backlog_bytes[l] + it->bytes) * 8.0 / rate_bps[l];
+                    double tn = static_cast<double>(backlog_bytes[nominal] + it->bytes) * 8.0 / rate_bps[nominal];
+                    if (fresh[l] && msg.lanes[l].outstanding_wqes == d &&
+                        tf * (1.0 + config_.hrlb.coord_eps_t) < tn &&
+                        ((config_.hrlb.coord_healthy_guard && scores[l] < config_.hrlb.theta) ||
+                         scores[l] <= scores[nominal] + config_.hrlb.coord_delta_guard)) {
+                        if (l < 32) fast_mask |= 1u << l;
+                    }
+                }
+                fprintf(tail_output_, "%lu,%s,%lu,%u,%u,%lu,%lu,%lu,%u,%u,%u\n",
+                    Simulator::Now().GetNanoSeconds(), hold_tail ? "hold" : "release", seq,
+                    msg.message_id, it->chunk_id, static_cast<uint64_t>(msg.pending_chunks.size()),
+                    unsent, inflight, nominal, chosen, fast_mask);
+                if (hold_tail) msg.observed_tail_holds.insert(it->chunk_id);
+                else msg.observed_tail_holds.erase(it->chunk_id);
+            }
+        }
+
         if (!hold_tail && msg.lanes[chosen].outstanding_wqes < d) {
             PendingChunk chunk = *it;
             msg.pending_chunks.erase(it);
@@ -693,11 +759,17 @@ bool HostResourceLb::TryCommitOneChunk(MessageState& msg, const char* trigger, u
                         scores, versions, ages, slots_before, ls.outstanding_wqes, cursor_before,
                         msg.target_cursor, reason);
             return true;
-        } else if (hold_tail && !logged_tail_hold) {
-            uint32_t slots = msg.lanes[nominal].outstanding_wqes;
-            LogDecision(seq, trigger, "blocked", msg, *it, nominal, nominal, false, fresh, scores,
-                        versions, ages, slots, slots, msg.target_cursor, msg.target_cursor, reason);
-            logged_tail_hold = true;
+        } else if (hold_tail) {
+            if (!logged_tail_hold) {
+                uint32_t slots = msg.lanes[nominal].outstanding_wqes;
+                LogDecision(seq, trigger, "blocked", msg, *it, nominal, nominal, false, fresh, scores,
+                            versions, ages, slots, slots, msg.target_cursor, msg.target_cursor, reason);
+                logged_tail_hold = true;
+            }
+            if (config_.hrlb.coord_tail_break) {
+                msg.held_schedule_seq = seq;
+                break;
+            }
         } else if (redirect_active && fresh[nominal] && scores[nominal] > config_.hrlb.theta) {
             uint32_t slots = msg.lanes[chosen].outstanding_wqes;
             LogDecision(seq, trigger, "blocked", msg, *it, nominal, chosen, false, fresh, scores,
@@ -705,6 +777,52 @@ bool HostResourceLb::TryCommitOneChunk(MessageState& msg, const char* trigger, u
         }
     }
     return false;
+}
+
+std::string HostResourceLb::DecisionState(const MessageState& msg) const {
+    if (!config_.hrlb.audit_log) return "";
+    std::ostringstream slots, rates, unsent, inflight, next;
+    for (size_t l = 0; l < msg.lanes.size(); ++l) {
+        if (l) { slots << ';'; rates << ';'; unsent << ';'; inflight << ';'; next << ';'; }
+        const LaneState& ls = msg.lanes[l];
+        slots << ls.outstanding_wqes;
+        rates << (ls.qp ? ls.qp->m_rate.GetBitRate() : 1);
+        unsent << (ls.qp ? ls.qp->GetBytesLeft() : 0);
+        inflight << (ls.qp ? ls.qp->GetOnTheFly() : 0);
+        next << (ls.qp ? ls.qp->m_nextAvail.GetNanoSeconds() : 0);
+    }
+    std::ostringstream out;
+    out << msg.src << ',' << msg.pending_chunks.size() << ',' << msg.completed_chunks << ',' << slots.str() << ','
+        << rates.str() << ',' << unsent.str() << ',' << inflight.str() << ',' << next.str();
+    return out.str();
+}
+
+void HostResourceLb::SampleLanes() {
+    if (!lane_output_) return;
+    bool unfinished = false;
+    uint64_t now = Simulator::Now().GetNanoSeconds();
+    for (const auto& item : messages_) {
+        const MessageState& msg = item.second;
+        if (msg.finish_ns) continue;
+        unfinished = true;
+        Ptr<QbbNetDevice> nic = DynamicCast<QbbNetDevice>(state_.nodes.Get(msg.src)->GetDevice(1));
+        for (uint32_t l = 0; l < msg.lanes.size(); ++l) {
+            const LaneState& ls = msg.lanes[l];
+            if (!ls.qp) continue;
+            uint64_t nominal_pending = 0;
+            for (const auto& chunk : msg.pending_chunks) {
+                if ((msg.message_id + chunk.chunk_id) % config_.hrlb.k == l) ++nominal_pending;
+            }
+            fprintf(lane_output_, "%lu,%u,%u,%u,%lu,%lu,%u,%lu,%lu,%lu,%ld,%u,%u,%u,%lu\n",
+                now, msg.src, msg.message_id, l, static_cast<uint64_t>(msg.pending_chunks.size()),
+                nominal_pending, ls.outstanding_wqes, ls.qp->GetBytesLeft(), ls.qp->GetOnTheFly(),
+                ls.qp->m_rate.GetBitRate(), ls.qp->m_nextAvail.GetNanoSeconds(),
+                ls.qp->IsWinBound() ? 1 : 0, nic->IsPriorityPaused(msg.pg) ? 1 : 0,
+                nic->IsSerializing() ? 1 : 0, nic->GetTxElapsedBusyTimeNs());
+        }
+    }
+    if (unfinished) lane_sample_event_ = Simulator::Schedule(
+        NanoSeconds(config_.monitoring.switch_interval_ns), &HostResourceLb::SampleLanes, this);
 }
 
 void HostResourceLb::SealMessage(MessageState& msg) {
@@ -726,6 +844,12 @@ void HostResourceLb::LogDecision(uint64_t seq, const char* trigger, const char* 
                                  uint32_t slots_after, uint32_t cursor_before,
                                  uint32_t cursor_after, const char* reason) {
     if (!decision_output_) return;
+    // Observation-only: no decision, slot, cursor or scheduling state depends on this.
+    if (config_.hrlb.decision_dedup && std::string(reason) == "coord_tail_guard_hold") {
+        MessageState& state = messages_.at(msg.message_id);
+        if (state.logged_hold_seq == seq) return;
+        state.logged_hold_seq = seq;
+    }
     std::ostringstream s_scores, s_fresh, s_versions, s_ages;
     s_scores << std::setprecision(17);
     for (size_t i = 0; i < scores.size(); ++i) {
@@ -742,8 +866,8 @@ void HostResourceLb::LogDecision(uint64_t seq, const char* trigger, const char* 
         s_ages << ages[i];
     }
     fprintf(decision_output_,
-            "%lu,%lu,%lu,%s,%s,%u,%u,%lu,%u,%u,%u,%u,%u,%.17g,%u,%.17g,%s,%s,%s,%s,%u,%u,%u,%u,%s\n",
-            Simulator::Now().GetNanoSeconds(), seq, latest_delivered_epoch_, trigger, event,
+            "%lu,%lu,%lu,%s,%s,%u,%u,%lu,%u,%u,%u,%u,%u,%.17g,%u,%.17g,%s,%s,%s,%s,%u,%u,%u,%u,%s",
+            Simulator::Now().GetNanoSeconds(), seq, delivered_epochs_[msg.src], trigger, event,
             msg.message_id, chunk.chunk_id, chunk.offset, chunk.bytes, nominal, chosen,
             is_redirect ? 1 : 0, fresh[nominal] ? 1 : 0,
             fresh[nominal] ? scores[nominal] : std::numeric_limits<double>::quiet_NaN(),
@@ -751,6 +875,8 @@ void HostResourceLb::LogDecision(uint64_t seq, const char* trigger, const char* 
             fresh[chosen] ? scores[chosen] : std::numeric_limits<double>::quiet_NaN(),
             s_scores.str().c_str(), s_fresh.str().c_str(), s_versions.str().c_str(),
             s_ages.str().c_str(), slots_before, slots_after, cursor_before, cursor_after, reason);
+    if (config_.hrlb.audit_log) fprintf(decision_output_, ",%s", decision_state_.c_str());
+    fprintf(decision_output_, "\n");
 }
 
 }  // namespace nlb

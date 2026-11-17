@@ -41,7 +41,7 @@ class HostResourceLb {
     void AddPendingTargetMessage(uint32_t flow_id, uint32_t src, uint32_t dst, uint32_t pg,
                                  uint64_t bytes, double start_s);
     void StartAddedMessages();
-    void OnResourceFrameDelivered(uint64_t epoch);
+    void OnResourceFrameDelivered(uint32_t host, uint64_t epoch);
 
   private:
     struct BgTupleSpec {
@@ -100,6 +100,9 @@ class HostResourceLb {
         uint64_t completed_bytes = 0;
         uint32_t target_cursor = 0;
         bool sealed = false;
+        uint64_t held_schedule_seq = 0;
+        uint64_t logged_hold_seq = 0;
+        std::set<uint32_t> observed_tail_holds;
         std::deque<PendingChunk> pending_chunks;
         std::vector<LaneState> lanes;
     };
@@ -115,10 +118,13 @@ class HostResourceLb {
                                  uint32_t event, ns3::RdmaQueuePair::WqeBoundary boundary);
     static void SwitchTxCallback(HostResourceLb* self, ns3::Ptr<ns3::QbbNetDevice> device,
                                  ns3::Ptr<const ns3::Packet> packet);
+    static void ResourceDeliveredCallback(HostResourceLb* self, uint32_t host, uint64_t epoch);
 
     void OnWqeComplete(ns3::Ptr<ns3::RdmaQueuePair> qp, ns3::RdmaQueuePair::WqeBoundary boundary);
-    void OnPostAck();
-    void RunSchedule(const char* trigger);
+    void OnPostAck(uint32_t host);
+    void RunSchedule(const char* trigger, uint32_t host);
+    void SampleLanes();
+    std::string DecisionState(const MessageState& msg) const;
     bool TryCommitOneChunk(MessageState& msg, const char* trigger, uint64_t seq);
     void SealMessage(MessageState& msg);
     void VerifyTuplePath(uint32_t src, uint32_t dst, uint16_t sport, uint16_t dport, uint16_t pg,
@@ -144,10 +150,14 @@ class HostResourceLb {
     std::vector<uint32_t> active_message_ids_;
     std::vector<uint32_t> pending_start_msgs_;
     std::set<uint32_t> connected_hosts_;
-    size_t msg_rr_cursor_ = 0;
-    uint64_t latest_delivered_epoch_ = 0;
+    std::map<uint32_t, size_t> msg_rr_cursors_;
+    std::map<uint32_t, uint64_t> delivered_epochs_;
     uint64_t schedule_seq_ = 0;
-    bool post_ack_scheduled_ = false;
+    std::set<uint32_t> post_ack_hosts_;
+    ns3::EventId lane_sample_event_;
+    std::string decision_state_;
+    FILE* lane_output_ = NULL;
+    FILE* tail_output_ = NULL;
     FILE* decision_output_ = NULL;
     FILE* message_output_ = NULL;
 };

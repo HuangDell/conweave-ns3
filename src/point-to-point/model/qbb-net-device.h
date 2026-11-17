@@ -132,6 +132,8 @@ public:
    uint64_t GetTxBusyTimeNs (void) const { return m_txBusyTimeNs; }
    uint64_t GetTxDepartedBytes (void) const { return m_txDepartedBytes; }
    uint64_t GetTxElapsedBusyTimeNs (void) const;
+   bool IsPriorityPaused(uint32_t pg) const { return pg < qCnt && m_paused[pg]; }
+   bool IsSerializing() const;
    uint64_t GetTxBacklogEvents (void) const { return m_txBacklogEvents; }
    virtual bool IsQbb(void) const;
    void NewQp(Ptr<RdmaQueuePair> qp);

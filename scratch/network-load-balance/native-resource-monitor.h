@@ -48,6 +48,9 @@ class NativeResourceMonitor {
                    ns3::Ptr<const ns3::Packet> packet);
     static void Pause(NativeResourceMonitor* self, ns3::Ptr<ns3::QbbNetDevice> device,
                       uint32_t pg, bool paused);
+    static void Enqueue(NativeResourceMonitor* self, ns3::Ptr<ns3::QbbNetDevice> device,
+                        ns3::Ptr<const ns3::Packet> packet, uint32_t queue);
+    std::map<std::pair<uint32_t, uint32_t>, uint64_t> enqueued_bytes_;
     static void GroupRx(NativeResourceMonitor* self, ns3::Ptr<ns3::QbbNetDevice> device,
                         ns3::Ptr<const ns3::Packet> packet);
     static void GroupTx(NativeResourceMonitor* self, ns3::Ptr<ns3::QbbNetDevice> device,

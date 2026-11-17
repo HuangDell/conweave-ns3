@@ -674,7 +674,7 @@ void MonitorBuffer(FILE* output, SimulationState* state, uint64_t monitor_end,
 #endif
 
 void SimulationMonitor::MonitorCompletion() {
-    bool horizon_reached = !host_path_sensing_ ||
+    bool horizon_reached = (!host_path_sensing_ && !config_.hrlb.monitor_full_window) ||
                            Simulator::Now() >= Seconds(config_.flowgen_stop_time);
     bool probes_accounted = !host_path_sensing_ || host_path_sensing_->ReadyToStop();
     if (Settings::cnt_finished_flows >= target_completion_count_ &&

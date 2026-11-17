@@ -15,3 +15,6 @@ analysis/figures/*.pdf
 .vscode
 __pycache__
 
+
+# Deterministically frozen HRLB v3 experiment inputs
+/config/v5/host_resource_lb_v3/

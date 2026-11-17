@@ -449,6 +449,10 @@ bool QbbNetDevice::Attach(Ptr<QbbChannel> ch) {
     return true;
 }
 
+bool QbbNetDevice::IsSerializing() const {
+    return Simulator::Now().GetNanoSeconds() < m_txSerializationEndNs;
+}
+
 uint64_t QbbNetDevice::GetTxElapsedBusyTimeNs(void) const {
     uint64_t now = Simulator::Now().GetNanoSeconds();
     return m_txBusyTimeNs - (m_txSerializationEndNs > now ? m_txSerializationEndNs - now : 0);

@@ -36,13 +36,23 @@ bool NativeResourceMonitor::Open() {
             "queue_bytes,mmu_used_bytes,pg3_pause_ns,rate_bps,window_start_ns,tx_elapsed_busy_ns");
     if (config_.cc.mode == CC_MODE_ODIN)
         fprintf(resources_, ",odin_active_qps,odin_sum_bps,odin_u");
+    if (config_.hrlb.audit_log) fprintf(resources_, ",enqueued_wire_bytes");
     fprintf(resources_, "\n");
     fprintf(qp_events_, "time_ns,event,flow_id,src,dst,sport,dport,pg,bytes,recovery_count,generated_payload_bytes\n");
     fprintf(pfc_, "node,interface,pg,start_ns,end_ns,right_censored\n");
     return true;
 }
 
+void NativeResourceMonitor::Enqueue(NativeResourceMonitor* self, Ptr<QbbNetDevice> device,
+                                     Ptr<const Packet> packet, uint32_t queue) {
+    self->enqueued_bytes_[std::make_pair(device->GetNode()->GetId(), device->GetIfIndex())] += packet->GetSize();
+    (void)queue;
+}
+
 void NativeResourceMonitor::ConnectDevice(Ptr<QbbNetDevice> device) {
+    if (config_.hrlb.audit_log && device->GetNode()->GetNodeType() == 1) {
+        device->TraceConnectWithoutContext("QbbEnqueue", MakeBoundCallback(&NativeResourceMonitor::Enqueue, this, device));
+    }
     device->TraceConnectWithoutContext("PfcState", MakeBoundCallback(&NativeResourceMonitor::Pause, this, device));
     if (device->GetNode()->GetNodeType() == 0) {
         device->TraceConnectWithoutContext("PhyTxBegin", MakeBoundCallback(&NativeResourceMonitor::Tx, this, device));
@@ -242,6 +252,7 @@ void NativeResourceMonitor::Sample() {
                     fprintf(resources_, ",0,0,0");
                 }
             }
+            if (config_.hrlb.audit_log) fprintf(resources_, ",%lu", enqueued_bytes_[std::make_pair(i, port)]);
             fprintf(resources_, "\n");
         }
     }

@@ -438,7 +438,7 @@ def validate_odin_options(args):
                 not math.isfinite(args.hrlb_coord_delta_psi) or args.hrlb_coord_delta_psi < 0 or
                 not math.isfinite(args.hrlb_coord_eps_t) or args.hrlb_coord_eps_t < 0 or
                 not math.isfinite(args.hrlb_coord_delta_guard) or args.hrlb_coord_delta_guard < 0 or
-                args.hrlb_freshness_ns < 0 or not args.hrlb_tuple_file):
+                args.hrlb_freshness_ns < 0 or args.hrlb_coord_tail_chunks < 1 or not args.hrlb_tuple_file):
             raise ValueError('Invalid HRLB parameters or missing --hrlb-tuple-file')
     elif (args.lb != 'fecmp' or args.v5_qp_pool or args.v5_nsub != 1 or
             args.v5_chunk_bytes or args.v5_estimator_enable or args.host_sensing_enable or
@@ -673,6 +673,13 @@ def main():
     parser.add_argument('--hrlb-coord-delta-psi', type=float, default=0.10)
     parser.add_argument('--hrlb-coord-eps-t', type=float, default=0.25)
     parser.add_argument('--hrlb-coord-delta-guard', type=float, default=0.05)
+    parser.add_argument('--hrlb-coord-tail-mode', choices=('off', 'all', 'drain'), default='all')
+    parser.add_argument('--hrlb-coord-tail-chunks', type=int, default=8)
+    parser.add_argument('--hrlb-coord-tail-break', type=int, choices=(0, 1), default=0)
+    parser.add_argument('--hrlb-coord-healthy-guard', type=int, choices=(0, 1), default=0)
+    parser.add_argument('--hrlb-decision-dedup', type=int, choices=(0, 1), default=0)
+    parser.add_argument('--hrlb-monitor-full-window', type=int, choices=(0, 1), default=0)
+    parser.add_argument('--hrlb-audit-log', type=int, choices=(0, 1), default=0)
     parser.add_argument('--hrlb-tuple-file', default=None)
     parser.add_argument('--packet-payload-bytes', type=int, default=1000)
     parser.add_argument('--link-delay-ns', type=int, default=1000)
@@ -1173,6 +1180,7 @@ def main():
                 f"HRLB_DECISION_OUTPUT_FILE mix/output/{config_ID}/{config_ID}_out_hrlb_decisions.csv\n"
                 f"HRLB_MESSAGE_OUTPUT_FILE mix/output/{config_ID}/{config_ID}_out_hrlb_messages.csv\n"
             )
+            config += f'HRLB_AUDIT_LOG {args.hrlb_audit_log}\nHRLB_MONITOR_FULL_WINDOW {args.hrlb_monitor_full_window}\n'
             if args.hrlb_gate_inflight0:
                 config += f"HRLB_GATE_INFLIGHT0 {args.hrlb_gate_inflight0}\n"
             if args.hrlb_bg_resource_feedback:
@@ -1182,6 +1190,11 @@ def main():
                     f"HRLB_COORD_DELTA_PSI {args.hrlb_coord_delta_psi}\n"
                     f"HRLB_COORD_EPS_T {args.hrlb_coord_eps_t}\n"
                     f"HRLB_COORD_DELTA_GUARD {args.hrlb_coord_delta_guard}\n"
+                    f"HRLB_COORD_TAIL_MODE {args.hrlb_coord_tail_mode}\n"
+                    f"HRLB_COORD_TAIL_CHUNKS {args.hrlb_coord_tail_chunks}\n"
+                    f"HRLB_COORD_TAIL_BREAK {args.hrlb_coord_tail_break}\n"
+                    f"HRLB_COORD_HEALTHY_GUARD {args.hrlb_coord_healthy_guard}\n"
+                    f"HRLB_DECISION_DEDUP {args.hrlb_decision_dedup}\n"
                 )
 
     config = config.replace('PACKET_PAYLOAD_SIZE 1000\n',
@@ -1313,6 +1326,13 @@ def main():
                 coord_delta_psi=args.hrlb_coord_delta_psi,
                 coord_eps_t=args.hrlb_coord_eps_t,
                 coord_delta_guard=args.hrlb_coord_delta_guard,
+                coord_tail_mode=args.hrlb_coord_tail_mode,
+                coord_tail_chunks=args.hrlb_coord_tail_chunks,
+                coord_tail_break=args.hrlb_coord_tail_break,
+                coord_healthy_guard=args.hrlb_coord_healthy_guard,
+                decision_dedup=args.hrlb_decision_dedup,
+                audit_log=args.hrlb_audit_log,
+                monitor_full_window=args.hrlb_monitor_full_window,
                 odin_resource_log=(args.odin_log if args.odin_resource_log is None else args.odin_resource_log),
                 tuple_file=os.path.abspath(args.hrlb_tuple_file),
                 tuple_sha256=sha256_file(os.path.abspath(args.hrlb_tuple_file)))

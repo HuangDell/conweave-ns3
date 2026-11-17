@@ -48,6 +48,20 @@ bool LoadExperimentConfig(const std::string& path, ExperimentConfig* config) {
             conf >> config->hrlb.coord_eps_t;
         } else if (key == "HRLB_COORD_DELTA_GUARD") {
             conf >> config->hrlb.coord_delta_guard;
+        } else if (key == "HRLB_COORD_TAIL_MODE") {
+            conf >> config->hrlb.coord_tail_mode;
+        } else if (key == "HRLB_COORD_TAIL_CHUNKS") {
+            conf >> config->hrlb.coord_tail_chunks;
+        } else if (key == "HRLB_COORD_TAIL_BREAK") {
+            conf >> config->hrlb.coord_tail_break;
+        } else if (key == "HRLB_COORD_HEALTHY_GUARD") {
+            conf >> config->hrlb.coord_healthy_guard;
+        } else if (key == "HRLB_DECISION_DEDUP") {
+            conf >> config->hrlb.decision_dedup;
+        } else if (key == "HRLB_MONITOR_FULL_WINDOW") {
+            conf >> config->hrlb.monitor_full_window;
+        } else if (key == "HRLB_AUDIT_LOG") {
+            conf >> config->hrlb.audit_log;
         } else if (key == "HRLB_TUPLE_FILE") {
             conf >> config->io.hrlb_tuple_file;
         } else if (key == "HRLB_DECISION_OUTPUT_FILE") {
