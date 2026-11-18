@@ -1021,9 +1021,11 @@ def main():
         if enforce_win == 1:
             print("### INFO: Enforced to use window scheme! ###")
 
-    # record to history
+    # Keep generated history inside this run's ignored output directory. Writing
+    # tracked mix/.history would change Git provenance during every clean run.
+    history_path = os.path.join(output_dir, "history.log")
     simulday = datetime.now().strftime("%m/%d/%y")
-    with open("./mix/.history", "a") as history:
+    with open(history_path, "a") as history:
         history.write("{simulday},{config_ID},{cc_mode},{lb_mode},{cwh_tx_expiry_time},{cwh_extra_reply_deadline},{cwh_path_pause_time},{cwh_extra_voq_flush_time},{cwh_default_voq_waiting_time},{pfc},{irn},{has_win},{var_win},{topo},{bw},{cdf},{load},{time}\n".format(
             simulday=simulday,
             config_ID=config_ID,
@@ -1357,7 +1359,7 @@ def main():
         lib_path_var=lib_path_var, lib_dir=lib_dir)
     run_command = "{run_prefix} {sim_binary} {config_name} > {output_log} 2>&1".format(
         run_prefix=run_prefix, sim_binary=sim_binary, config_name=config_name, output_log=output_log)
-    with open("./mix/.history", "a") as history:
+    with open(history_path, "a") as history:
         history.write(run_command + "\n")
         history.write(
             "{run_prefix} gdb --args {sim_binary} {config_name}\n".format(
