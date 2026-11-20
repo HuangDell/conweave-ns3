@@ -48,6 +48,8 @@ bool LoadExperimentConfig(const std::string& path, ExperimentConfig* config) {
             conf >> config->hrlb.coord_eps_t;
         } else if (key == "HRLB_COORD_DELTA_GUARD") {
             conf >> config->hrlb.coord_delta_guard;
+        } else if (key == "HRLB_LB_SCORE_SCOPE") {
+            conf >> config->hrlb.lb_score_scope;
         } else if (key == "HRLB_COORD_TAIL_MODE") {
             conf >> config->hrlb.coord_tail_mode;
         } else if (key == "HRLB_COORD_TAIL_CHUNKS") {

@@ -118,6 +118,7 @@ struct HrlbConfig {
     double coord_eps_t = 0.25;
     double coord_delta_guard = 0.05;
     // Defaults preserve frozen v1/v2 behavior; v3 opts in explicitly.
+    std::string lb_score_scope = "auto";
     std::string coord_tail_mode = "all";
     uint32_t coord_tail_chunks = 8;
     uint32_t coord_tail_break = 0;

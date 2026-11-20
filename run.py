@@ -670,6 +670,7 @@ def main():
     parser.add_argument('--hrlb-decision-log', type=int, choices=(0, 1), default=0)
     parser.add_argument('--hrlb-gate-inflight0', type=int, choices=(0, 1), default=0)
     parser.add_argument('--hrlb-bg-resource-feedback', type=int, choices=(0, 1), default=0)
+    parser.add_argument('--hrlb-lb-score-scope', choices=('auto', 'full', 'divergent'), default='auto')
     parser.add_argument('--hrlb-coord-delta-psi', type=float, default=0.10)
     parser.add_argument('--hrlb-coord-eps-t', type=float, default=0.25)
     parser.add_argument('--hrlb-coord-delta-guard', type=float, default=0.05)
@@ -1187,6 +1188,8 @@ def main():
                 config += f"HRLB_GATE_INFLIGHT0 {args.hrlb_gate_inflight0}\n"
             if args.hrlb_bg_resource_feedback:
                 config += f"HRLB_BG_RESOURCE_FEEDBACK {args.hrlb_bg_resource_feedback}\n"
+            if args.hrlb_lb_score_scope != 'auto':
+                config += f"HRLB_LB_SCORE_SCOPE {args.hrlb_lb_score_scope}\n"
             if args.hrlb_policy == 'coord':
                 config += (
                     f"HRLB_COORD_DELTA_PSI {args.hrlb_coord_delta_psi}\n"
@@ -1320,6 +1323,8 @@ def main():
         if args.hrlb_enable:
             manifest['config']['hrlb'] = dict(
                 policy=args.hrlb_policy, redirect=args.hrlb_redirect, k=args.hrlb_k,
+                lb_score_scope=(args.hrlb_lb_score_scope if args.hrlb_lb_score_scope != 'auto' else
+                                'divergent' if args.hrlb_policy == 'coord' and args.hrlb_redirect else 'full'),
                 chunk_bytes=args.hrlb_chunk_bytes, depth=args.hrlb_depth, theta=args.hrlb_theta,
                 freshness_ns=args.hrlb_freshness_ns, mapping_version=args.hrlb_mapping_version,
                 decision_log=args.hrlb_decision_log,

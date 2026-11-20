@@ -160,6 +160,9 @@ void HostResourceLb::VerifyTuplePath(uint32_t src, uint32_t dst, uint16_t sport,
 
 bool HostResourceLb::Initialize() {
     if (!IsEnabled()) return true;
+    NS_ABORT_MSG_IF(config_.hrlb.lb_score_scope != "auto" &&
+                        config_.hrlb.lb_score_scope != "full" &&
+                        config_.hrlb.lb_score_scope != "divergent", "invalid LB score scope");
     NS_ABORT_MSG_IF(config_.hrlb.coord_tail_mode != "off" &&
                         config_.hrlb.coord_tail_mode != "all" &&
                         config_.hrlb.coord_tail_mode != "drain", "invalid tail mode");
@@ -549,6 +552,9 @@ bool HostResourceLb::TryCommitOneChunk(MessageState& msg, const char* trigger, u
 
     bool redirect_active = (config_.hrlb.policy == "redirect") && (config_.hrlb.redirect != 0);
     bool coord_active = (config_.hrlb.policy == "coord") && (config_.hrlb.redirect != 0);
+    // Resolve the scoring scope independently of the rule used to choose a lane.
+    const bool use_divergent_score = config_.hrlb.lb_score_scope == "divergent" ||
+                                     (config_.hrlb.lb_score_scope == "auto" && coord_active);
 
     std::vector<bool> fresh(k, false);
     std::vector<double> scores(k, 0.0);
@@ -559,7 +565,7 @@ bool HostResourceLb::TryCommitOneChunk(MessageState& msg, const char* trigger, u
     for (uint32_t l = 0; l < k; ++l) {
         bool tbo = false;
         const char* r = nullptr;
-        if (coord_active) {
+        if (use_divergent_score) {
             fresh[l] = driver->m_rdma->QueryOdinResourceSetScore(
                 msg.lanes[l].div_resources, config_.hrlb.mapping_version, base_rtt, &scores[l],
                 &tbo, &ages[l], &versions[l], nullptr, &r);
