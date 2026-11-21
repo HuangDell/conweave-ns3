@@ -68,6 +68,13 @@ SimulationMonitor::SimulationMonitor(const ExperimentConfig& config, SimulationS
 SimulationMonitor::~SimulationMonitor() { CloseOutputs(); }
 
 bool SimulationMonitor::OpenCoreOutputs() {
+    if (!config_.io.odin_int_output_file.empty()) {
+        odin_int_output_ = fopen(config_.io.odin_int_output_file.c_str(), "w");
+        if (!odin_int_output_) return false;
+        fprintf(odin_int_output_, "time_ns,event,node,packet_uid,qp_key,switch,port,reason,"
+                                  "rx_ns,anchor_dt_ns,true_measured_ns,value,"
+                                  "bytes_mod,queue_bytes,line_bps,tbo\n");
+    }
     if (config_.monitoring.odin_log) {
         odin_output_ = fopen(config_.io.odin_output_file.c_str(), "w");
         if (!odin_output_) return false;
@@ -200,6 +207,7 @@ void SimulationMonitor::CloseOutputs() {
         host_path_sensing_->CloseOutputs();
     }
     CloseFile(&odin_output_);
+    CloseFile(&odin_int_output_);
     CloseFile(&pfc_output_);
     CloseFile(&fct_output_);
     CloseFile(&flow_input_output_);
@@ -304,6 +312,10 @@ void SimulationMonitor::WqeEventCallback(SimulationMonitor* monitor,
 }
 
 void SimulationMonitor::ConnectPfcTrace(Ptr<QbbNetDevice> device) {
+    if (odin_int_output_) {
+        device->TraceConnectWithoutContext(
+            "PhyTxBegin", MakeBoundCallback(&SimulationMonitor::OdinIntWireTrace, this, device));
+    }
     if (native_resources_) native_resources_->ConnectDevice(device);
     device->TraceConnectWithoutContext(
         "QbbPfc", MakeBoundCallback(&SimulationMonitor::PfcTraceCallback, this, device));
@@ -313,6 +325,7 @@ void SimulationMonitor::ConnectPfcTrace(Ptr<QbbNetDevice> device) {
 }
 
 void SimulationMonitor::ConnectQpComplete(Ptr<RdmaDriver> driver) {
+    driver->m_rdma->m_odinIntAudit = odin_int_output_;
     if (odin_output_) driver->m_rdma->TraceConnectWithoutContext(
         "OdinControl", MakeBoundCallback(&SimulationMonitor::OdinTrace, this));
     if (native_resources_) native_resources_->ConnectDriver(driver);
@@ -323,6 +336,26 @@ void SimulationMonitor::ConnectQpComplete(Ptr<RdmaDriver> driver) {
         MakeBoundCallback(&SimulationMonitor::PersistentQpEventCallback, this));
     driver->TraceConnectWithoutContext(
         "WqeEvent", MakeBoundCallback(&SimulationMonitor::WqeEventCallback, this));
+}
+
+void SimulationMonitor::OdinIntWireTrace(SimulationMonitor* self, Ptr<QbbNetDevice> device,
+                                        Ptr<const Packet> packet) {
+    CustomHeader ch(CustomHeader::L2_Header | CustomHeader::L3_Header | CustomHeader::L4_Header);
+    const uint32_t parsed = packet->PeekHeader(ch);
+    const char* kind;
+    uint32_t payload = 0;
+    if (ch.l3Prot == 0x11) {
+        kind = ch.udp.ih.IsProbe() ? "probe_request" : "data";
+        payload = packet->GetSize() - parsed;
+    } else if (ch.l3Prot == 0xFC || ch.l3Prot == 0xFD) {
+        kind = ch.ack.ih.IsProbe() ? "probe_reply" : ch.l3Prot == 0xFC ? "ack" : "nack";
+    } else {
+        return;
+    }
+    fprintf(self->odin_int_output_, "%lu,wire,%u,%lu,0,%u,%u,%s,%u,%u,0,%u,0,0,0,0\n",
+            Simulator::Now().GetNanoSeconds(), device->GetNode()->GetId(), packet->GetUid(),
+            device->GetNode()->GetNodeType(), device->GetIfIndex(), kind, payload, parsed,
+            packet->GetSize());
 }
 
 void SimulationMonitor::OdinTrace(SimulationMonitor* self, Ptr<RdmaQueuePair> qp,

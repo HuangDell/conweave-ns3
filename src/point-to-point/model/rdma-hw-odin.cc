@@ -1,4 +1,5 @@
 #include "rdma-hw.h"
+#include "odin-int-tag.h"
 #include "ns3/simulator.h"
 #include <algorithm>
 #include <cmath>
@@ -28,15 +29,18 @@ void RdmaHw::TraceOdin(Ptr<RdmaQueuePair> qp, OdinEvent event) {
     m_traceOdin(qp, event);
 }
 
-void RdmaHw::HandleAckOdin(Ptr<RdmaQueuePair> qp, CustomHeader& ch) {
+void RdmaHw::HandleAckOdin(Ptr<RdmaQueuePair> qp, CustomHeader& ch, Ptr<const Packet> packet) {
     OdinEvent event;
     event.ack_seq = ch.ack.seq;
+    uint64_t qp_key = GetQpKey(qp->dip.Get(), qp->sport, qp->dport, qp->m_pg);
     auto skip = [&](const char* reason) {
         event.reason = reason;
         TraceOdin(qp, event);
+        if (m_odinIntShareMode == 1) TraceInt("pace", packet->GetUid(), qp_key, reason);
     };
     if (ch.l3Prot != 0xFC) { skip("nack"); return; }
-    uint64_t qp_key = GetQpKey(qp->dip.Get(), qp->sport, qp->dport, qp->m_pg);
+    if (m_odinIntShareMode == 1)
+        TraceInt("ack", packet->GetUid(), qp_key, "data", OdinResourceKey(), 0, 0, 0, ch.ack.seq);
     if (m_odinResourceFeedback &&
         (m_odinResourcePaths.count(qp_key) ||
          (Simulator::Now().GetNanoSeconds() >= m_odinResourceStartNs &&
@@ -59,6 +63,8 @@ void RdmaHw::HandleAckOdin(Ptr<RdmaQueuePair> qp, CustomHeader& ch) {
         baseline(); skip("baseline"); return;
     }
     double psi = 0;
+    OdinIntTag tag;
+    if (m_odinIntShareMode == 1 && m_odinIntAudit) packet->PeekPacketTag(tag);
     for (uint32_t i = 0; i < hops; ++i) {
         IntHop& current = ih.hop[i];
         IntHop& previous = qp->odin.previous.hop[i];
@@ -93,9 +99,19 @@ void RdmaHw::HandleAckOdin(Ptr<RdmaQueuePair> qp, CustomHeader& ch) {
         sample.sample_line_bps = rate;
         sample.sample_time_mod_ns = current.GetTime();
         TraceOdin(qp, sample);
+        if (m_odinIntShareMode == 1)
+            TraceInt("pace_sample", packet->GetUid(), qp_key, "accepted",
+                     OdinResourceKey(ih.res_sw[i], ih.GetResourcePort(i)), now, dt,
+                     tag.measured_ns[i], current.GetTime(), &current, ih.HasHopTbo(i));
         psi = std::max(psi, value);
     }
     baseline();
+    if (m_odinIntShareMode == 1) {
+        const bool applied = ApplyIntFeedback(qp, qp_key, m_odinIntMinUpdateNs, psi,
+                                              ih.HasTbo(), event);
+        TraceInt("pace", packet->GetUid(), qp_key, applied ? "update" : event.reason);
+        return;
+    }
     event.event = "update";
     event.control = m_nic[qp->odin.nic].odin.OnFeedback(
         GetQpKey(qp->dip.Get(), qp->sport, qp->dport, qp->m_pg), psi, ih.HasTbo(),
@@ -104,6 +120,248 @@ void RdmaHw::HandleAckOdin(Ptr<RdmaQueuePair> qp, CustomHeader& ch) {
     ChangeRate(qp, DataRate(event.control.rate));
     event.next_after_ns = qp->m_nextAvail.GetNanoSeconds();
     TraceOdin(qp, event);
+}
+
+void RdmaHw::TraceInt(const char* event, uint64_t ack_uid, uint64_t key, const char* reason,
+                      OdinResourceKey resource, uint64_t rx_ns, uint64_t dt_ns,
+                      uint64_t measured_ns, uint64_t value, const IntHop* hop, bool tbo) const {
+    if (!m_odinIntAudit) return;
+    fprintf(m_odinIntAudit, "%lu,%s,%u,%lu,%lu,%u,%u,%s,%lu,%lu,%lu,%lu,%u,%u,%lu,%u\n",
+            Simulator::Now().GetNanoSeconds(), event, m_node->GetId(), ack_uid, key,
+            resource.switch_id, resource.interface, reason, rx_ns, dt_ns, measured_ns, value,
+            hop ? static_cast<unsigned>(hop->bytes) : 0, hop ? hop->GetQlen() : 0,
+            hop ? hop->GetLineRate() : 0, unsigned(tbo));
+}
+
+bool RdmaHw::ApplyIntFeedback(Ptr<RdmaQueuePair> qp, uint64_t key, uint64_t interval_ns,
+                              double psi, bool tbo, OdinEvent& event) {
+    uint64_t now = Simulator::Now().GetNanoSeconds();
+    auto skip = [&](const char* reason) {
+        event.reason = reason;
+        TraceOdin(qp, event);
+        return false;
+    };
+    event.control.psi = psi;
+    event.control.tbo = tbo;
+    if (!qp->odin.active || !qp->GetBytesLeft()) return skip("no_unsent_data");
+    if (now - qp->odin.last_update_ns < interval_ns) return skip("cooldown");
+    if (!std::isfinite(psi) || psi <= 0) return skip("resource_zero_psi");
+    auto& controller = m_nic[qp->odin.nic].odin;
+    const uint64_t beta = m_odinBeta.GetBitRate();
+    const uint64_t minimum = m_minRate.GetBitRate();
+    if (m_odinGateInflight0 && !qp->GetOnTheFly() &&
+        controller.PreviewFeedback(key, psi, tbo, m_odinEta, m_odinGamma, beta,
+                                   minimum).rate < qp->m_rate.GetBitRate()) {
+        return skip("inflight0_no_decrease");
+    }
+    event.event = "update";
+    event.control = controller.OnFeedback(key, psi, tbo, m_odinEta, m_odinGamma, beta, minimum);
+    qp->odin.last_update_ns = now;
+    event.next_before_ns = qp->m_nextAvail.GetNanoSeconds();
+    ChangeRate(qp, DataRate(event.control.rate));
+    event.next_after_ns = qp->m_nextAvail.GetNanoSeconds();
+    TraceOdin(qp, event);
+    return true;
+}
+
+void RdmaHw::ForgetSharedIntPath(uint64_t key) {
+    auto path = m_odinIntPaths.find(key);
+    if (path == m_odinIntPaths.end()) return;
+    for (const auto& resource : path->second) {
+        auto members = m_odinIntSubscribers.find(resource);
+        if (members == m_odinIntSubscribers.end()) continue;
+        members->second.erase(key);
+        if (members->second.empty()) m_odinIntSubscribers.erase(members);
+    }
+    m_odinIntPaths.erase(path);
+}
+
+bool RdmaHw::TrySharedIntFeedback(Ptr<RdmaQueuePair> qp, uint64_t key, uint64_t ack_uid,
+                                  const char* trigger, uint32_t seq, bool apply) {
+    if (!qp || !qp->odin.active || !qp->GetBytesLeft()) return false;
+    auto path = m_odinIntPaths.find(key);
+    if (path == m_odinIntPaths.end()) return false;
+    const uint64_t now = Simulator::Now().GetNanoSeconds();
+    const char* blocked = nullptr;
+    double psi = 0;
+    bool tbo = false;
+    for (const auto& resource : path->second) {
+        auto cached = m_odinIntCache.find(resource);
+        const char* reason = "stale_or_missing_hop";
+        uint64_t rx = 0, dt = 0, measured = 0;
+        if (cached != m_odinIntCache.end()) {
+            const auto& history = cached->second;
+            const auto& current = history.back();
+            rx = current.rx_ns;
+            measured = current.true_measured_ns;
+            dt = current.time_ns - history.front().time_ns;
+            if (now - rx <= m_odinIntFreshnessNs) {
+                reason = "cache_not_ready";
+                if (dt >= m_odinIntWindowNs) {
+                    double mu = current.hop.GetBytesDelta(history.front().hop) * 8e9 / dt;
+                    double line = current.hop.GetLineRate();
+                    psi = std::max(psi, mu / line + current.hop.GetQlen() * 8e9 /
+                                                    (line * qp->m_baseRtt));
+                    tbo |= current.tbo;
+                    reason = nullptr;
+                }
+            }
+        }
+        TraceInt(trigger, ack_uid, key, reason ? reason : "ready", resource, rx, dt, measured);
+        if (reason && (!blocked || std::strcmp(reason, "stale_or_missing_hop") == 0))
+            blocked = reason;
+    }
+    if (!apply || blocked) {
+        TraceInt("candidate", ack_uid, key, blocked ? blocked : "all_ready");
+        return false;
+    }
+    OdinEvent event;
+    event.reason = trigger;
+    event.ack_seq = seq;
+    // The frozen foreign threshold T_share is the same as T_min.
+    const bool updated = ApplyIntFeedback(qp, key, m_odinIntMinUpdateNs, psi, tbo, event);
+    TraceInt("candidate", ack_uid, key, updated ? "update" : event.reason);
+    return updated;
+}
+
+void RdmaHw::HandleSharedIntAck(Ptr<RdmaQueuePair> qp, uint64_t key, Ptr<const Packet> packet,
+                                const CustomHeader& ch) {
+    const IntHeader& ih = ch.ack.ih;
+    const uint64_t uid = packet->GetUid();
+    const bool probe = ih.IsProbe();
+    const uint32_t hops = ih.GetHopCount();
+    TraceInt("ack", uid, key, probe ? "probe" : "data", OdinResourceKey(), 0, 0, 0, ch.ack.seq);
+    if (!hops || hops > IntHeader::maxHop) {
+        TraceInt("sample", uid, key, "invalid_hops");
+        return;
+    }
+    const uint64_t now = Simulator::Now().GetNanoSeconds();
+    const uint64_t half = uint64_t(1) << (IntHop::timeWidth - 1);
+    OdinIntTag tag;
+    if (m_odinIntAudit) packet->PeekPacketTag(tag);
+    OdinIntPath path;
+    std::set<uint64_t> candidates;
+    for (uint32_t i = 0; i < hops; ++i) {
+        OdinResourceKey resource(ih.res_sw[i], ih.GetResourcePort(i));
+        path.push_back(resource);
+        const IntHop& hop = ih.hop[i];
+        const uint64_t rate = hop.GetLineRate();
+        if (!rate) {
+            TraceInt("sample", uid, key, "invalid_line_rate", resource, now, 0,
+                     tag.measured_ns[i]);
+            continue;
+        }
+        auto& history = m_odinIntCache[resource];
+        const double byte_wrap = std::ldexp(double(IntHop::byteUnit) * IntHop::multi,
+                                            IntHop::bytesWidth) * 8e9 / rate;
+        const double guard = std::min(double(half), byte_wrap);
+        uint64_t unwrapped = hop.GetTime();
+        const char* reason = "baseline";
+        if (!history.empty()) {
+            const auto& last = history.back();
+            if (rate != last.hop.GetLineRate() || now - last.rx_ns + m_odinIntMaxRttNs >= guard) {
+                history.clear();
+                reason = "rebaseline";
+            } else {
+                uint64_t dt = hop.GetTimeDelta(last.hop);
+                if (!dt || dt >= half) {
+                    TraceInt("sample", uid, key, "ooo_sample_dropped", resource, now, 0,
+                             tag.measured_ns[i], hop.GetTime(), &hop, ih.HasHopTbo(i));
+                    continue;
+                }
+                unwrapped = last.time_ns + dt;
+                reason = "accepted";
+            }
+        }
+        history.push_back({hop, now, tag.measured_ns[i], unwrapped, ih.HasHopTbo(i)});
+        while (history.size() >= 2 && unwrapped - history[1].time_ns >= m_odinIntWindowNs)
+            history.pop_front();
+        // The anchor must still admit an unambiguous byte delta.
+        if (unwrapped - history.front().time_ns >= guard) {
+            auto latest = history.back();
+            history.clear();
+            history.push_back(latest);
+            reason = "rebaseline";
+        }
+        NS_ABORT_MSG_IF(history.size() > 2048, "Odin INT history exceeds safety bound");
+        TraceInt("sample", uid, key, reason, resource, now,
+                 unwrapped - history.front().time_ns, tag.measured_ns[i], hop.GetTime(), &hop,
+                 ih.HasHopTbo(i));
+        if (m_odinIntShareMode >= 3 || m_odinIntAudit) {
+            auto members = m_odinIntSubscribers.find(resource);
+            if (members != m_odinIntSubscribers.end())
+                candidates.insert(members->second.begin(), members->second.end());
+        }
+    }
+
+    if (qp && GetQp(key) == qp) {
+        auto learned = m_odinIntPaths.emplace(key, path);
+        NS_ABORT_MSG_IF(learned.first->second != path, "Odin INT changed a fixed QP path");
+        if (learned.second) {
+            for (const auto& resource : path) m_odinIntSubscribers[resource].insert(key);
+        }
+        TrySharedIntFeedback(qp, key, uid, probe ? "probe_self" : "self", ch.ack.seq, true);
+    }
+    candidates.erase(key);
+    std::vector<std::pair<uint64_t, Ptr<RdmaQueuePair>>> ordered;
+    for (auto other : candidates) ordered.emplace_back(other, m_qpMap.at(other));
+    std::sort(ordered.begin(), ordered.end(), [](const std::pair<uint64_t, Ptr<RdmaQueuePair>>& a,
+                                                const std::pair<uint64_t, Ptr<RdmaQueuePair>>& b) {
+        return std::tie(a.second->m_flow_id, a.second->m_v5_lane, a.first) <
+               std::tie(b.second->m_flow_id, b.second->m_v5_lane, b.first);
+    });
+    std::set<uint32_t> extra_nics;
+    uint32_t wakeups = 0;
+    for (const auto& candidate : ordered) {
+        auto other = candidate.second;
+        if (TrySharedIntFeedback(other, candidate.first, uid, "foreign", ch.ack.seq,
+                                 m_odinIntShareMode >= 3)) {
+            ++wakeups;
+            if (!qp || other->odin.nic != qp->odin.nic) extra_nics.insert(other->odin.nic);
+        }
+    }
+    TraceInt("wakeups", uid, key, "", OdinResourceKey(), 0, 0, 0, wakeups);
+    for (uint32_t nic : extra_nics) m_nic[nic].dev->TriggerTransmit();
+}
+
+void RdmaHw::ArmIntProbeCheck() {
+    if (!m_odinIntProbeCheck.IsRunning())
+        m_odinIntProbeCheck = Simulator::Schedule(MicroSeconds(4), &RdmaHw::CheckIntProbes, this);
+}
+
+void RdmaHw::CheckIntProbes() {
+    const uint64_t now = Simulator::Now().GetNanoSeconds();
+    bool pending = false;
+    std::set<uint32_t> nics;
+    // QP-key order deterministically selects one request per learned path.
+    for (const auto& entry : m_qpMap)
+        pending |= entry.second->odin.active && entry.second->GetBytesLeft() > 0;
+    if (!pending) return;
+    for (const auto& entry : m_odinIntPaths) {
+        const auto qp = m_qpMap.at(entry.first);
+        const auto& path = entry.second;
+        if (!qp->odin.active || !qp->GetBytesLeft() ||
+            now - qp->odin.last_update_ns < m_odinIntProbeIntervalNs) continue;
+        auto last = m_odinIntLastProbe.find(path);
+        if (last != m_odinIntLastProbe.end() && now - last->second <= m_odinIntProbeIntervalNs)
+            continue;
+        bool blind = std::any_of(path.begin(), path.end(), [&](const OdinResourceKey& resource) {
+            auto cached = m_odinIntCache.find(resource);
+            if (cached == m_odinIntCache.end()) return true;
+            const auto& history = cached->second;
+            return now - history.back().rx_ns > m_odinIntProbeIntervalNs ||
+                   history.back().time_ns - history.front().time_ns < m_odinIntWindowNs;
+        });
+        if (!blind) continue;
+        auto packet = BuildRdmaUdp(qp, 0, 0, true);
+        const uint32_t nic = GetNicIdxOfQp(qp);
+        m_odinIntLastProbe[path] = now;
+        TraceInt("probe_enqueue", packet->GetUid(), entry.first, "");
+        m_nic[nic].dev->RdmaEnqueueHighPrioQ(packet);
+        nics.insert(nic);
+    }
+    for (uint32_t nic : nics) m_nic[nic].dev->TriggerTransmit();
+    ArmIntProbeCheck();
 }
 
 uint32_t RdmaHw::ApplyOdinResourceFeedback(
@@ -367,7 +625,7 @@ uint32_t RdmaHw::ApplyOdinMultiHopResourceFeedback(
             TraceOdin(q, e);
             continue;
         }
-        if (m_odinResourceGateInflight0 && q->m_persistent && q->GetOnTheFly() == 0) {
+        if (m_odinGateInflight0 && q->m_persistent && q->GetOnTheFly() == 0) {
             OdinController::Update preview = m_nic[q->odin.nic].odin.PreviewFeedback(
                 qp_key, psi, tbo, m_odinEta, m_odinGamma, m_odinBeta.GetBitRate(),
                 m_minRate.GetBitRate());

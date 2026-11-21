@@ -182,7 +182,7 @@ void NativePathDiagnostics::RegisterPath(uint32_t source_tor,
 void NativePathDiagnostics::RecordEcmpAssignment(Ptr<Packet> packet, const CustomHeader& header,
                                                  uint32_t source_tor, uint32_t destination_tor,
                                                  uint32_t out_port) {
-    if (!g_enabled || header.l3Prot != 0x11) return;
+    if (!g_enabled || header.l3Prot != 0x11 || header.udp.ih.IsProbe()) return;
     FlowIDNUMTag tag;
     int32_t app = packet->PeekPacketTag(tag) ? tag.GetId() : -1;
     FlowKey key{app, header.sip, header.dip, header.udp.sport, header.udp.dport, header.udp.pg};

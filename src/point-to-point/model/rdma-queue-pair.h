@@ -83,6 +83,7 @@ class RdmaQueuePair : public Object {
         bool sampled = false, active = false;
         uint32_t nic = 0;
         uint64_t received_ns = 0;
+        uint64_t last_update_ns = 0;
         IntHeader previous;
     } odin;
     bool m_var_win;       // variable window size

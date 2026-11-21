@@ -16,6 +16,18 @@ bool LoadExperimentConfig(const std::string& path, ExperimentConfig* config) {
     while (conf >> key) {
         if (key == "ODIN_RESOURCE_FEEDBACK") {
             conf >> config->cc.odin_resource_feedback;
+        } else if (key == "ODIN_INT_SHARE_MODE") {
+            conf >> config->cc.odin_int_share_mode;
+        } else if (key == "ODIN_INT_MIN_UPDATE_NS") {
+            conf >> config->cc.odin_int_min_update_ns;
+        } else if (key == "ODIN_INT_WINDOW_NS") {
+            conf >> config->cc.odin_int_window_ns;
+        } else if (key == "ODIN_INT_FRESHNESS_NS") {
+            conf >> config->cc.odin_int_freshness_ns;
+        } else if (key == "ODIN_INT_PROBE_INTERVAL_NS") {
+            conf >> config->cc.odin_int_probe_interval_ns;
+        } else if (key == "ODIN_INT_OUTPUT_FILE") {
+            conf >> config->io.odin_int_output_file;
         } else if (key == "ODIN_RESOURCE_LOG") {
             conf >> config->hrlb.odin_resource_log;
         } else if (key == "HRLB_ENABLE") {

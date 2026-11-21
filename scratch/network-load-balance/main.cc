@@ -13,6 +13,7 @@
 #include <ns3/core-module.h>
 #include <ns3/global-route-manager.h>
 #include <ns3/internet-module.h>
+#include <ns3/rdma-driver.h>
 #include <ns3/rdma-hw.h>
 
 #include <cstdio>
@@ -72,6 +73,12 @@ int main(int argc, char* argv[]) {
     nlb::InstallRdmaHosts(config, state, topology.GetIrnBdp(), monitor);
     nlb::ConfigureSwitchTransport(config, state);
     topology.CalculateRoutesAndMetrics();
+    if (config.cc.odin_int_share_mode >= 2) {
+        for (auto it = state.nodes.Begin(); it != state.nodes.End(); ++it) {
+            if (auto driver = (*it)->GetObject<RdmaDriver>())
+                driver->m_rdma->m_odinIntMaxRttNs = state.max_rtt;
+        }
+    }
     nlb::ConfigureLoadBalancer(config, state, monitor);
 
     Ipv4GlobalRoutingHelper::PopulateRoutingTables();

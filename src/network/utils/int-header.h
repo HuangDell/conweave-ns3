@@ -33,16 +33,16 @@ public:
 	static const uint32_t qlenUnit = 80;
 	static uint32_t multi;
 
-	uint64_t GetLineRate(){
+	uint64_t GetLineRate() const {
 		return lineRateValues[lineRate];
 	}
 	uint64_t GetBytes(){
 		return (uint64_t)bytes * byteUnit * multi;
 	}
-	uint32_t GetQlen(){
+	uint32_t GetQlen() const {
 		return (uint32_t)qlen * qlenUnit * multi;
 	}
-	uint64_t GetTime(){
+	uint64_t GetTime() const {
 		return time;
 	}
 	void Set(uint64_t _time, uint64_t _bytes, uint32_t _qlen, uint64_t _rate){
@@ -67,13 +67,13 @@ public:
 				break;
 		}
 	}
-	uint64_t GetBytesDelta(IntHop &b){
+	uint64_t GetBytesDelta(const IntHop &b) const {
 		if (bytes >= b.bytes)
 			return (bytes - b.bytes) * byteUnit * multi;
 		else
 			return (bytes + (1<<bytesWidth) - b.bytes) * byteUnit * multi;
 	}
-	uint64_t GetTimeDelta(IntHop &b){
+	uint64_t GetTimeDelta(const IntHop &b) const {
 		if (time >= b.time)
 			return time - b.time;
 		else
@@ -84,24 +84,37 @@ public:
 class IntHeader{
 public:
 	static const uint32_t maxHop = 5;
-	static uint32_t mode; // 0: INT, 1: TS, 5:0
+	static uint32_t mode; // 0: INT, 1: TS, 2: INT with resources, 5: none
+	static constexpr uint32_t INT_WITH_RES_ID = 2;
+	static constexpr uint32_t resourceWireSize = 62;
 
 	// Note: the structure of IntHeader must have no internal padding, because we will directly transform the part of packet buffer to IntHeader*
 	union{
 		struct {
 			IntHop hop[maxHop];
 			uint16_t nhop;
+			uint16_t res_sw[maxHop];
+			uint16_t res_port[maxHop];
 		};
 		uint64_t ts;
 	};
 
 	static const uint16_t tboMask = 0x8000;
-	uint16_t GetHopCount() const { return nhop & ~tboMask; }
+	static const uint16_t probeMask = 0x4000;
+	uint16_t GetHopCount() const {
+		return nhop & ~(tboMask | (mode == INT_WITH_RES_ID ? probeMask : 0));
+	}
 	bool HasTbo() const { return (nhop & tboMask) != 0; }
 	void MarkTbo() { nhop |= tboMask; }
+	bool IsProbe() const { return mode == INT_WITH_RES_ID && (nhop & probeMask); }
+	void MarkProbe() { nhop |= probeMask; }
+	uint16_t GetResourcePort(uint32_t i) const { return res_port[i] & ~tboMask; }
+	bool HasHopTbo(uint32_t i) const { return (res_port[i] & tboMask) != 0; }
 	IntHeader();
 	static uint32_t GetStaticSize();
 	void PushHop(uint64_t time, uint64_t bytes, uint32_t qlen, uint64_t rate);
+	void PushHopWithRes(uint64_t time, uint64_t bytes, uint32_t qlen, uint64_t rate,
+	                    uint32_t sw, uint32_t port, bool tbo);
 	void Serialize (Buffer::Iterator start) const;
 	uint32_t Deserialize (Buffer::Iterator start);
 	uint64_t GetTs(void);

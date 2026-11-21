@@ -42,6 +42,16 @@ bool ConfigureSimulationDefaults(const ExperimentConfig& config) {
         return false;
     }
 
+    bool real_int = config.cc.odin_int_share_mode != 0;
+    if (real_int &&
+        (config.cc.mode != CC_MODE_ODIN || config.cc.odin_int_share_mode > 4 ||
+         !config.hrlb.enable || config.hrlb.policy != "wc" || config.hrlb.redirect ||
+         config.cc.odin_resource_feedback || config.hrlb.bg_resource_feedback ||
+         !config.cc.odin_int_window_ns || config.cc.odin_int_window_ns >= (1u << 23) ||
+         !config.cc.odin_int_freshness_ns || !config.cc.odin_int_probe_interval_ns)) {
+        std::cerr << "Extended INT requires ACK Odin and WC without periodic reports\n";
+        return false;
+    }
     if (config.cc.mode == CC_MODE_ODIN) {
         bool valid_odin_base =
             config.lb.mode == LbMode::kEcmp && !config.cc.enable_irn && config.cc.enable_pfc &&
@@ -57,7 +67,8 @@ bool ConfigureSimulationDefaults(const ExperimentConfig& config) {
         bool valid_ack_hrlb =
             config.cc.odin_resource_feedback == 0 &&
             (config.hrlb.policy == "uniform" || config.hrlb.policy == "wc") &&
-            !config.hrlb.redirect && !config.hrlb.gate_inflight0 && !config.hrlb.bg_resource_feedback;
+            !config.hrlb.redirect && (!config.hrlb.gate_inflight0 || real_int) &&
+            !config.hrlb.bg_resource_feedback;
         bool valid_hrlb_odin =
             config.hrlb.enable == 1 && (config.cc.odin_resource_feedback == 1 || valid_ack_hrlb) &&
             config.traffic.v5_qp_pool == 1 && config.traffic.v5_qp_pool_size == config.hrlb.k &&
@@ -74,7 +85,9 @@ bool ConfigureSimulationDefaults(const ExperimentConfig& config) {
         }
     }
     IntHop::multi = config.cc.int_multi;
-    if (config.cc.mode == 7) {
+    if (real_int) {
+        IntHeader::mode = IntHeader::INT_WITH_RES_ID;
+    } else if (config.cc.mode == 7) {
         IntHeader::mode = 1;
     } else if (config.cc.mode == 3 || config.cc.mode == CC_MODE_ODIN) {
         IntHeader::mode = 0;
@@ -107,7 +120,12 @@ void InstallRdmaHosts(const ExperimentConfig& config, SimulationState& state, ui
         hardware->m_odinTraceEnabled = config.monitoring.odin_log != 0;
         hardware->m_odinTraceFlowIds = config.monitoring.odin_log_flow_ids;
         hardware->m_odinAllowPersistent = config.hrlb.enable != 0;
-        hardware->m_odinResourceGateInflight0 =
+        hardware->m_odinIntShareMode = config.cc.odin_int_share_mode;
+        hardware->m_odinIntMinUpdateNs = config.cc.odin_int_min_update_ns;
+        hardware->m_odinIntWindowNs = config.cc.odin_int_window_ns;
+        hardware->m_odinIntFreshnessNs = config.cc.odin_int_freshness_ns;
+        hardware->m_odinIntProbeIntervalNs = config.cc.odin_int_probe_interval_ns;
+        hardware->m_odinGateInflight0 =
             (config.hrlb.enable != 0 && config.hrlb.gate_inflight0 != 0);
         hardware->m_odinResourceFreshnessNs = config.hrlb.freshness_ns;
         hardware->m_odinResourceWindowNs = config.cc.odin_resource_window_ns;
@@ -157,6 +175,7 @@ void ConfigureSwitchTransport(const ExperimentConfig& config, SimulationState& s
             switch_node->SetAttribute("CcMode", UintegerValue(config.cc.mode));
             switch_node->SetAttribute("OdinTboRatio", DoubleValue(config.cc.odin_tbo_ratio));
             switch_node->SetAttribute("AckHighPrio", UintegerValue(1));
+            switch_node->m_odinIntAudit = !config.io.odin_int_output_file.empty();
         }
     }
 }

@@ -176,7 +176,10 @@ void CustomHeader::Serialize (Buffer::Iterator start) const{
 		  i.WriteU32(ack.seq);
 		  i.WriteU32(ack.irnNack);
 		  i.WriteU16(ack.irnNackSize);
-		  udp.ih.Serialize(i);
+		  if (IntHeader::mode == IntHeader::INT_WITH_RES_ID)
+			  ack.ih.Serialize(i);
+		  else
+			  udp.ih.Serialize(i);
 	  }else if (l3Prot == 0xFE){ // PFC
 		  i.WriteU32 (pfc.time);
 		  i.WriteU32 (pfc.qlen);
@@ -333,7 +336,13 @@ uint8_t CustomHeader::GetIpv4EcnBits (void) const{
 }
 
 uint32_t CustomHeader::GetAckSerializedSize(void){
-	return sizeof(ack.sport) + sizeof(ack.dport) + sizeof(ack.flags) + sizeof(ack.pg) + sizeof(ack.seq) + IntHeader::GetStaticSize();
+	uint32_t size = sizeof(ack.sport) + sizeof(ack.dport) + sizeof(ack.flags) +
+	                sizeof(ack.pg) + sizeof(ack.seq) + IntHeader::GetStaticSize();
+	// The legacy parser reports its historical length. Extended INT includes
+	// the IRN fields already read by both ACK parsers.
+	if (IntHeader::mode == IntHeader::INT_WITH_RES_ID)
+		size += sizeof(ack.irnNack) + sizeof(ack.irnNackSize);
+	return size;
 }
 
 uint32_t CustomHeader::GetUdpHeaderSize(void){

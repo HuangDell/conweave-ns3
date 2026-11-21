@@ -12,6 +12,7 @@
 
 #include "cn-header.h"
 #include "flow-stat-tag.h"
+#include "odin-int-tag.h"
 #include "ns3/boolean.h"
 #include "ns3/data-rate.h"
 #include "ns3/double.h"
@@ -228,6 +229,7 @@ void RdmaHw::RegisterQueuePair(Ptr<RdmaQueuePair> qp, bool notify_nic) {
     uint64_t key = GetQpKey(qp->dip.Get(), qp->sport, qp->dport, qp->m_pg);
     NS_ASSERT_MSG(m_qpMap.find(key) == m_qpMap.end(), "duplicate active RDMA QP key");
     m_qpMap[key] = qp;
+    if (m_odinIntShareMode == 4) ArmIntProbeCheck();
 
     // set init variables
     DataRate m_bps = m_nic[nic_idx].dev->GetDataRate();
@@ -312,6 +314,7 @@ Ptr<RdmaQueuePair> RdmaHw::AppendPersistentWqe(
             event.reason = "persistent_wake";
             TraceOdin(qp, event);
         }
+        if (m_odinIntShareMode == 4) ArmIntProbeCheck();
         if (was_idle && !m_persistentQpEventCallback.IsNull()) {
             m_persistentQpEventCallback(qp, PERSISTENT_QP_WAKE);
         }
@@ -366,6 +369,7 @@ void RdmaHw::DeleteQueuePair(Ptr<RdmaQueuePair> qp) {
 
     // delete
     m_qpMap.erase(key);
+    if (m_odinIntShareMode >= 2) ForgetSharedIntPath(key);
 }
 
 // DATA UDP's src = this key's dst (receiver's dst)
@@ -399,10 +403,10 @@ Ptr<RdmaRxQueuePair> RdmaHw::GetRxQp(uint32_t sip, uint32_t dip, uint16_t sport,
     }
     return NULL;
 }
-uint32_t RdmaHw::GetNicIdxOfRxQp(Ptr<RdmaRxQueuePair> q) {
-    auto &v = m_rtTable[q->dip];
+uint32_t RdmaHw::GetNicIdxOfRxQp(RdmaRxQueuePair& q) {
+    auto &v = m_rtTable[q.dip];
     if (v.size() > 0) {
-        return v[q->GetHash() % v.size()];
+        return v[q.GetHash() % v.size()];
     }
     NS_ASSERT_MSG(false, "We assume at least one NIC is alive");
     std::cout << "We assume at least one NIC is alive" << std::endl;
@@ -421,7 +425,57 @@ void RdmaHw::DeleteRxQp(uint32_t dip, uint16_t dport, uint16_t sport, uint16_t p
     m_rxQpMap.erase(key);
 }
 
+Ptr<Packet> RdmaHw::BuildRdmaAck(Ptr<const Packet> p, const CustomHeader& ch,
+                                const qbbHeader& seqh, uint8_t protocol, uint16_t ipid) {
+    Ptr<Packet> newp =
+        Create<Packet>(std::max(60 - 14 - 20 - (int)seqh.GetSerializedSize(), 0));
+    newp->AddHeader(seqh);
+
+    Ipv4Header head;  // Prepare IPv4 header
+    head.SetDestination(Ipv4Address(ch.sip));
+    head.SetSource(Ipv4Address(ch.dip));
+    head.SetProtocol(protocol);
+    head.SetTtl(64);
+    head.SetPayloadSize(newp->GetSize());
+    head.SetIdentification(ipid);
+
+    {
+        FlowIDNUMTag fit;
+        if (p->PeekPacketTag(fit)) {
+            newp->AddPacketTag(fit);
+        }
+    }
+
+    newp->AddHeader(head);
+    AddHeader(newp, 0x800);  // Attach PPP header
+    if (IntHeader::mode == IntHeader::INT_WITH_RES_ID && m_odinIntAudit) {
+        OdinIntTag tag;
+        if (p->PeekPacketTag(tag)) newp->AddPacketTag(tag);
+    }
+    return newp;
+}
+
 int RdmaHw::ReceiveUdp(Ptr<Packet> p, CustomHeader &ch) {
+    if (ch.udp.ih.IsProbe()) {
+        if (m_odinIntShareMode != 4 || p->GetSize() != ch.GetSerializedSize()) return 1;
+        qbbHeader ack(ch.udp.pg);
+        ack.SetSport(ch.udp.dport);
+        ack.SetDport(ch.udp.sport);
+        ack.SetIntHeader(ch.udp.ih);
+        ack.SetIrnNack(0);
+        ack.SetIrnNackSize(0);
+
+        // Route the reply using the normal RX tuple, without creating reliability state.
+        RdmaRxQueuePair route;
+        route.sip = ch.dip;
+        route.dip = ch.sip;
+        route.sport = ch.udp.dport;
+        route.dport = ch.udp.sport;
+        auto dev = m_nic[GetNicIdxOfRxQp(route)].dev;
+        dev->RdmaEnqueueHighPrioQ(BuildRdmaAck(p, ch, ack, 0xFC, 0));
+        dev->TriggerTransmit();
+        return 0;
+    }
     uint8_t ecnbits = ch.GetIpv4EcnBits();
 
     uint32_t payload_size = p->GetSize() - ch.GetSerializedSize();
@@ -473,6 +527,10 @@ int RdmaHw::ReceiveUdp(Ptr<Packet> p, CustomHeader &ch) {
         seqh.SetDport(ch.udp.sport);
         seqh.SetIntHeader(ch.udp.ih);
 
+        if (IntHeader::mode == IntHeader::INT_WITH_RES_ID) {
+            seqh.SetIrnNack(0);
+            seqh.SetIrnNackSize(0);
+        }
         if (m_irn) {
             if (x == 2) {
                 seqh.SetIrnNack(ch.udp.seq);
@@ -499,33 +557,13 @@ int RdmaHw::ReceiveUdp(Ptr<Packet> p, CustomHeader &ch) {
             seqh.SetCnp();
         }
 
-        Ptr<Packet> newp =
-            Create<Packet>(std::max(60 - 14 - 20 - (int)seqh.GetSerializedSize(), 0));
-        newp->AddHeader(seqh);
-
-        Ipv4Header head;  // Prepare IPv4 header
-        head.SetDestination(Ipv4Address(ch.sip));
-        head.SetSource(Ipv4Address(ch.dip));
-        head.SetProtocol(x == 1 ? 0xFC : 0xFD);  // ack=0xFC nack=0xFD
-        head.SetTtl(64);
-        head.SetPayloadSize(newp->GetSize());
-        head.SetIdentification(rxQp->m_ipid++);
-
-        {
-            FlowIDNUMTag fit;
-            if (p->PeekPacketTag(fit)) {
-                newp->AddPacketTag(fit);
-            }
-        }
-
-        newp->AddHeader(head);
-        AddHeader(newp, 0x800);  // Attach PPP header
+        Ptr<Packet> newp = BuildRdmaAck(p, ch, seqh, x == 1 ? 0xFC : 0xFD, rxQp->m_ipid++);
 
         // send
         if (x == 2)
             ConWeaveCausalTrace::Packet("nack_tx", m_node->GetId(), p, ch, 0,
                                         rxQp->ReceiverNextExpectedSeq, newp->GetUid());
-        uint32_t nic_idx = GetNicIdxOfRxQp(rxQp);
+        uint32_t nic_idx = GetNicIdxOfRxQp(*rxQp);
         m_nic[nic_idx].dev->RdmaEnqueueHighPrioQ(newp);
         m_nic[nic_idx].dev->TriggerTransmit();
     }
@@ -602,6 +640,8 @@ int RdmaHw::ReceiveAck(Ptr<Packet> p, CustomHeader &ch) {
         if (akashic_Qp.find(key) != akashic_Qp.end()) {
             // printf("[GetQPACK] Akashic access: %u(%d) -> %u(%d)\n", this->m_node->GetId(), port,
             // ch.sip, sport);
+            if (m_odinIntShareMode >= 2 && ch.l3Prot == 0xFC)
+                HandleSharedIntAck(qp, key, p, ch);
             return 1;
         } else {
             printf("ERROR: Node: %u %s - NIC cannot find the flow\n", m_node->GetId(),
@@ -612,6 +652,13 @@ int RdmaHw::ReceiveAck(Ptr<Packet> p, CustomHeader &ch) {
 
     uint32_t nic_idx = GetNicIdxOfQp(qp);
     Ptr<QbbNetDevice> dev = m_nic[nic_idx].dev;
+
+    if (ch.ack.ih.IsProbe()) {
+        if (m_odinIntShareMode != 4 || ch.l3Prot != 0xFC) return 1;
+        HandleSharedIntAck(qp, key, p, ch);
+        dev->TriggerTransmit();
+        return 0;
+    }
 
     if (m_ack_interval == 0)
         std::cout << "ERROR: shouldn't receive ack\n";
@@ -714,7 +761,11 @@ int RdmaHw::ReceiveAck(Ptr<Packet> p, CustomHeader &ch) {
     }
 
     if (m_cc_mode == CC_MODE_ODIN) {
-        if (qp->odin.active) HandleAckOdin(qp, ch);
+        if (m_odinIntShareMode >= 2) {
+            if (ch.l3Prot == 0xFC) HandleSharedIntAck(qp, key, p, ch);
+        } else if (qp->odin.active || m_odinIntShareMode == 1) {
+            HandleAckOdin(qp, ch, p);
+        }
     } else if (m_cc_mode == 3) {
         HandleAckHp(qp, p, ch);
     } else if (m_cc_mode == 7) {
@@ -972,29 +1023,14 @@ void RdmaHw::RedistributeQp() {
     }
 }
 
-Ptr<Packet> RdmaHw::GetNxtPacket(Ptr<RdmaQueuePair> qp) {
-    uint32_t payload_size = qp->GetBytesLeft();
-    const RdmaQueuePair::WqeBoundary* packet_wqe = nullptr;
-    if (qp->m_persistent) {
-        qp->MarkWqeServiceStart(qp->snd_nxt, Simulator::Now());
-        packet_wqe = qp->GetWqeForSequence(qp->snd_nxt);
-        NS_ASSERT_MSG(packet_wqe != nullptr, "persistent QP has bytes without a WQE boundary");
-        payload_size = std::min<uint64_t>(
-            payload_size, packet_wqe->cumulative_end_seq - qp->snd_nxt);
-    }
-    if (m_mtu < payload_size) {  // possibly last packet
-        payload_size = m_mtu;
-    }
-    uint32_t seq = (uint32_t)qp->snd_nxt;
-    bool proceed_snd_nxt = true;
-    qp->stat.txTotalPkts += 1;
-    qp->stat.txTotalBytes += payload_size;
-
+Ptr<Packet> RdmaHw::BuildRdmaUdp(Ptr<RdmaQueuePair> qp, uint32_t payload_size,
+                                uint32_t seq, bool probe) {
     Ptr<Packet> p = Create<Packet>(payload_size);
     // add SeqTsHeader
     SeqTsHeader seqTs;
     seqTs.SetSeq(seq);
     seqTs.SetPG(qp->m_pg);
+    if (probe) seqTs.ih.MarkProbe();
     p->AddHeader(seqTs);
     // add udp header
     UdpHeader udpHeader;
@@ -1015,6 +1051,28 @@ Ptr<Packet> RdmaHw::GetNxtPacket(Ptr<RdmaQueuePair> qp) {
     PppHeader ppp;
     ppp.SetProtocol(0x0021);  // EtherToPpp(0x800), see point-to-point-net-device.cc
     p->AddHeader(ppp);
+    return p;
+}
+
+Ptr<Packet> RdmaHw::GetNxtPacket(Ptr<RdmaQueuePair> qp) {
+    uint32_t payload_size = qp->GetBytesLeft();
+    const RdmaQueuePair::WqeBoundary* packet_wqe = nullptr;
+    if (qp->m_persistent) {
+        qp->MarkWqeServiceStart(qp->snd_nxt, Simulator::Now());
+        packet_wqe = qp->GetWqeForSequence(qp->snd_nxt);
+        NS_ASSERT_MSG(packet_wqe != nullptr, "persistent QP has bytes without a WQE boundary");
+        payload_size = std::min<uint64_t>(
+            payload_size, packet_wqe->cumulative_end_seq - qp->snd_nxt);
+    }
+    if (m_mtu < payload_size) {  // possibly last packet
+        payload_size = m_mtu;
+    }
+    uint32_t seq = (uint32_t)qp->snd_nxt;
+    bool proceed_snd_nxt = true;
+    qp->stat.txTotalPkts += 1;
+    qp->stat.txTotalBytes += payload_size;
+
+    Ptr<Packet> p = BuildRdmaUdp(qp, payload_size, seq, false);
 
     // attach Stat Tag
     uint8_t packet_pos = UINT8_MAX;

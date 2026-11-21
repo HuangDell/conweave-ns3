@@ -76,7 +76,7 @@ void NativeResourceMonitor::GroupPacket(Ptr<QbbNetDevice> device, Ptr<const Pack
                                         uint32_t direction) {
     CustomHeader ch(CustomHeader::L2_Header | CustomHeader::L3_Header | CustomHeader::L4_Header);
     packet->PeekHeader(ch);
-    if (ch.l3Prot != 0x11) return;
+    if (ch.l3Prot != 0x11 || ch.udp.ih.IsProbe()) return;
     uint32_t header = CustomHeader::GetStaticWholeHeaderSize();
     NS_ABORT_MSG_IF(packet->GetSize() < header, "invalid grouped data packet size");
     GroupKey key(direction, device->GetNode()->GetId(), device->GetIfIndex(),
@@ -135,7 +135,7 @@ void NativeResourceMonitor::Tx(NativeResourceMonitor* self, Ptr<QbbNetDevice> de
                                Ptr<const Packet> packet) {
     CustomHeader ch(CustomHeader::L2_Header | CustomHeader::L3_Header | CustomHeader::L4_Header);
     packet->PeekHeader(ch);
-    if (ch.l3Prot != 0x11) {
+    if (ch.l3Prot != 0x11 || ch.udp.ih.IsProbe()) {
         return;
     }
     FlowIDNUMTag tag;

@@ -79,6 +79,8 @@ class SimulationMonitor {
     FILE* odin_output_ = NULL;
     static void OdinTrace(SimulationMonitor* monitor, ns3::Ptr<ns3::RdmaQueuePair> qp,
                           const ns3::OdinEvent& event);
+    static void OdinIntWireTrace(SimulationMonitor* monitor, ns3::Ptr<ns3::QbbNetDevice> device,
+                                 ns3::Ptr<const ns3::Packet> packet);
     FILE* pfc_output_ = NULL;
     FILE* fct_output_ = NULL;
     FILE* flow_input_output_ = NULL;
@@ -86,6 +88,7 @@ class SimulationMonitor {
     FILE* voq_output_ = NULL;
     FILE* voq_detail_output_ = NULL;
     FILE* uplink_output_ = NULL;
+    FILE* odin_int_output_ = NULL;
     FILE* conn_output_ = NULL;
     FILE* path_delay_output_ = NULL;
     FILE* ooo_event_output_ = NULL;

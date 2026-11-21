@@ -6,6 +6,7 @@
 #include <ns3/rdma.h>
 #include <ns3/selective-packet-queue.h>
 
+#include <deque>
 #include <set>
 #include <unordered_map>
 #include <unordered_set>
@@ -16,6 +17,8 @@
 #include "rdma-queue-pair.h"
 
 namespace ns3 {
+
+class qbbHeader;
 
 struct RdmaInterfaceMgr {
     Ptr<QbbNetDevice> dev;
@@ -60,11 +63,16 @@ class RdmaHw : public Object {
     double m_odinEta, m_odinGamma;
     DataRate m_odinBeta;
     TracedCallback<Ptr<RdmaQueuePair>, const OdinEvent&> m_traceOdin;
-    void HandleAckOdin(Ptr<RdmaQueuePair> qp, CustomHeader& ch);
+    void HandleAckOdin(Ptr<RdmaQueuePair> qp, CustomHeader& ch, Ptr<const Packet> packet);
     void TraceOdin(Ptr<RdmaQueuePair> qp, OdinEvent event);
     bool m_odinResourceFeedback = false;
     bool m_odinAllowPersistent = false;
-    bool m_odinResourceGateInflight0 = false;
+    bool m_odinGateInflight0 = false;
+    uint32_t m_odinIntShareMode = 0;
+    uint64_t m_odinIntMinUpdateNs = 8000, m_odinIntWindowNs = 8000;
+    uint64_t m_odinIntFreshnessNs = 16000, m_odinIntProbeIntervalNs = 16000;
+    uint64_t m_odinIntMaxRttNs = 0;
+    FILE* m_odinIntAudit = nullptr;
     uint64_t m_odinResourceStartNs = 0, m_odinResourceVersion = 0;
     uint64_t m_odinResourceWindowNs = 32000, m_odinResourceFreshnessNs = 16000;
     uint32_t m_odinExpectedMappingVersion = 1;
@@ -77,6 +85,9 @@ class RdmaHw : public Object {
         bool operator<(const OdinResourceKey& other) const {
             return switch_id != other.switch_id ? switch_id < other.switch_id
                                                  : interface < other.interface;
+        }
+        bool operator==(const OdinResourceKey& other) const {
+            return switch_id == other.switch_id && interface == other.interface;
         }
     };
     struct OdinPathSpec {
@@ -167,7 +178,7 @@ class RdmaHw : public Object {
     static uint64_t GetRxQpKey(uint32_t dip, uint16_t dport, uint16_t sport, uint16_t pg);
     Ptr<RdmaRxQueuePair> GetRxQp(uint32_t sip, uint32_t dip, uint16_t sport, uint16_t dport,
                                  uint16_t pg, bool create);  // get a rxQp
-    uint32_t GetNicIdxOfRxQp(Ptr<RdmaRxQueuePair> q);        // get the NIC index of the rxQp
+    uint32_t GetNicIdxOfRxQp(RdmaRxQueuePair& q);             // get the NIC index of the rxQp
     void DeleteRxQp(uint32_t dip, uint16_t dport, uint16_t sport, uint16_t pg);  // delete RxQP
 
     int ReceiveUdp(Ptr<Packet> p, CustomHeader &ch);
@@ -285,6 +296,36 @@ class RdmaHw : public Object {
     uint32_t m_irn_bdp;
 
    private:
+    struct OdinIntSample {
+        IntHop hop;
+        uint64_t rx_ns;
+        uint64_t true_measured_ns;
+        uint64_t time_ns;
+        bool tbo;
+    };
+    typedef std::vector<OdinResourceKey> OdinIntPath;
+    std::map<OdinResourceKey, std::deque<OdinIntSample>> m_odinIntCache;
+    std::map<uint64_t, OdinIntPath> m_odinIntPaths;
+    std::map<OdinResourceKey, std::set<uint64_t>> m_odinIntSubscribers;
+    std::map<OdinIntPath, uint64_t> m_odinIntLastProbe;
+    EventId m_odinIntProbeCheck;
+
+    void HandleSharedIntAck(Ptr<RdmaQueuePair> qp, uint64_t key, Ptr<const Packet> packet,
+                            const CustomHeader& ch);
+    void ForgetSharedIntPath(uint64_t key);
+    bool ApplyIntFeedback(Ptr<RdmaQueuePair> qp, uint64_t key, uint64_t interval_ns,
+                          double psi, bool tbo, OdinEvent& event);
+    bool TrySharedIntFeedback(Ptr<RdmaQueuePair> qp, uint64_t key, uint64_t ack_uid,
+                              const char* trigger, uint32_t seq, bool apply);
+    void TraceInt(const char* event, uint64_t ack_uid, uint64_t key, const char* reason,
+                  OdinResourceKey resource = OdinResourceKey(), uint64_t rx_ns = 0,
+                  uint64_t dt_ns = 0, uint64_t measured_ns = 0, uint64_t value = 0,
+                  const IntHop* hop = nullptr, bool tbo = false) const;
+    void ArmIntProbeCheck();
+    void CheckIntProbes();
+    Ptr<Packet> BuildRdmaUdp(Ptr<RdmaQueuePair> qp, uint32_t bytes, uint32_t seq, bool probe);
+    Ptr<Packet> BuildRdmaAck(Ptr<const Packet> packet, const CustomHeader& ch,
+                            const qbbHeader& ack, uint8_t protocol, uint16_t ipid);
     Ptr<RdmaQueuePair> CreateQueuePair(uint64_t size, uint16_t pg, Ipv4Address sip,
                                        Ipv4Address dip, uint16_t sport, uint16_t dport,
                                        uint32_t win, uint64_t baseRtt, int32_t flow_id);

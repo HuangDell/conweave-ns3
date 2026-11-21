@@ -400,7 +400,8 @@ def validate_physical_options(args):
         raise ValueError('--expected-bdp-bytes exceeds the QP window range')
     if not 0 <= args.buffer_bytes < 2**32:
         raise ValueError('--buffer-bytes exceeds the MMU counter range')
-    if args.buffer_bytes and args.buffer_bytes <= args.packet_payload_bytes + 90:
+    data_header_bytes = 110 if args.odin_int_share_mode else 90
+    if args.buffer_bytes and args.buffer_bytes <= args.packet_payload_bytes + data_header_bytes:
         raise ValueError('--buffer-bytes must exceed one complete data packet')
     if not math.isfinite(args.min_rate_mbps) or not 0 < args.min_rate_mbps <= float(args.bw) * 1000:
         raise ValueError('--min-rate-mbps must be positive and at most NIC line rate')
@@ -415,9 +416,18 @@ def validate_physical_options(args):
 def validate_odin_options(args):
     """Reject unsupported Odin combinations before allocating outputs or inputs."""
     if args.cc != 'odin':
-        if args.odin_log or args.odin_resource_feedback or args.hrlb_enable:
+        if (args.odin_log or args.odin_resource_feedback or args.hrlb_enable or
+                args.odin_int_share_mode or args.odin_int_audit):
             raise ValueError('--odin-log, --odin-resource-feedback, and --hrlb-enable require --cc odin')
         return
+    real_int = args.odin_int_share_mode != 0
+    if real_int and (not args.hrlb_enable or args.hrlb_policy != 'wc' or args.hrlb_redirect or
+                     args.odin_resource_feedback or args.hrlb_bg_resource_feedback):
+        raise ValueError('Extended INT requires ACK Odin and WC HRLB without periodic reports')
+    if real_int and (args.odin_int_min_update_ns < 0 or
+                     not 0 < args.odin_int_window_ns < 2**23 or
+                     args.odin_int_freshness_ns <= 0 or args.odin_int_probe_interval_ns <= 0):
+        raise ValueError('Invalid extended INT timing')
     for name in ('odin_eta', 'odin_gamma'):
         value = getattr(args, name)
         if not math.isfinite(value) or not 0 < value <= 1:
@@ -434,7 +444,8 @@ def validate_odin_options(args):
                              '--v5_nsub 1 --v5_chunk_bytes 0, PFC=1, IRN=0')
         if not args.odin_resource_feedback and (
                 args.hrlb_policy not in ('uniform', 'wc') or args.hrlb_redirect or
-                args.hrlb_gate_inflight0 or args.hrlb_bg_resource_feedback or args.odin_resource_log):
+                (args.hrlb_gate_inflight0 and not real_int) or args.hrlb_bg_resource_feedback or
+                args.odin_resource_log):
             raise ValueError('ACK HRLB requires uniform or wc with redirect, resource gate and background subscription off')
         if args.hrlb_policy == 'wc' and args.hrlb_redirect:
             raise ValueError('WC HRLB requires --hrlb-redirect 0')
@@ -660,6 +671,12 @@ def main():
                         help='Write .resources.csv (defaults to --odin-log)')
     parser.add_argument('--odin-resource-host', type=int, default=0)
     parser.add_argument('--odin-resource-destinations', default='1,2')
+    parser.add_argument('--odin-int-share-mode', type=int, choices=range(5), default=0)
+    parser.add_argument('--odin-int-min-update-ns', type=int, default=8000)
+    parser.add_argument('--odin-int-window-ns', type=int, default=8000)
+    parser.add_argument('--odin-int-freshness-ns', type=int, default=16000)
+    parser.add_argument('--odin-int-probe-interval-ns', type=int, default=16000)
+    parser.add_argument('--odin-int-audit', action='store_true')
     parser.add_argument('--odin-resource-period-ns', type=int, default=8000)
     parser.add_argument('--odin-resource-window-ns', type=int, default=32000)
     parser.add_argument('--odin-resource-delay-ns', type=int, default=2000)
@@ -1169,6 +1186,11 @@ def main():
             if args.odin_resource_destinations:
                 config += ('ODIN_RESOURCE_DESTINATIONS ' + str(len(args.odin_resource_destinations)) + ' ' +
                            ' '.join(map(str, args.odin_resource_destinations)) + '\n')
+        if args.odin_int_share_mode:
+            for key in ('share_mode', 'min_update_ns', 'window_ns', 'freshness_ns', 'probe_interval_ns'):
+                config += f'ODIN_INT_{key.upper()} {getattr(args, "odin_int_" + key)}\n'
+        if args.odin_int_audit:
+            config += f'ODIN_INT_OUTPUT_FILE mix/output/{config_ID}/{config_ID}_out_odin_int.csv\n'
         if args.hrlb_enable:
             resource_log = int(bool(args.odin_resource_feedback)) * (
                 args.odin_log if args.odin_resource_log is None else args.odin_resource_log)
@@ -1328,6 +1350,13 @@ def main():
                 start_ns=args.odin_resource_start_ns, ack_cc_after_start=False,
                 qp_order='ascending_message_id_lane' if args.hrlb_enable else 'ascending_flow_id',
                 zero_psi='skip', unsent_only=True)
+        if args.odin_int_share_mode or args.odin_int_audit:
+            manifest['config']['odin']['real_int'] = dict(
+                share_mode=args.odin_int_share_mode, int_mode=2 if args.odin_int_share_mode else 0,
+                gate_inflight0=bool(args.odin_int_share_mode and args.hrlb_gate_inflight0),
+                min_update_ns=args.odin_int_min_update_ns, window_ns=args.odin_int_window_ns,
+                freshness_ns=args.odin_int_freshness_ns, probe_interval_ns=args.odin_int_probe_interval_ns,
+                audit=args.odin_int_audit)
         if args.hrlb_enable:
             manifest['config']['hrlb'] = dict(
                 policy=args.hrlb_policy, redirect=args.hrlb_redirect, k=args.hrlb_k,

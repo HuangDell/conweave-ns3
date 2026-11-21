@@ -17,6 +17,8 @@
 #include "ns3/uinteger.h"
 #include "ppp-header.h"
 #include "qbb-net-device.h"
+#include "odin-int-tag.h"
+#include <cstring>
 
 namespace ns3 {
 
@@ -403,9 +405,35 @@ void SwitchNode::SwitchNotifyDequeue(uint32_t ifIndex, uint32_t qIndex, Ptr<Pack
     if (1) {
         uint8_t *buf = p->GetBuffer();
         if (buf[PppHeader::GetStaticSize() + 9] == 0x11) {  // udp packet
-            IntHeader *ih = (IntHeader *)&buf[PppHeader::GetStaticSize() + 20 + 8 +
-                                              6];  // ppp, ip, udp, SeqTs, INT
+            const uint32_t offset = PppHeader::GetStaticSize() + 20 + 8 + 6;
             Ptr<QbbNetDevice> dev = DynamicCast<QbbNetDevice>(m_devices[ifIndex]);
+            if (m_ccMode == 9 && IntHeader::mode == IntHeader::INT_WITH_RES_ID) {
+                IntHeader ih;
+                NS_ABORT_MSG_IF(p->GetSize() < offset + IntHeader::resourceWireSize,
+                                "truncated resource INT header");
+                // The packet buffer need not have the alignment of IntHeader.
+                std::memcpy(&ih, buf + offset, IntHeader::resourceWireSize);
+                const uint32_t hop = ih.GetHopCount();
+                const uint32_t queued = dev->GetQueue()->GetNBytesTotal();
+                NS_ABORT_MSG_IF(queued >= (uint64_t(1) << IntHop::qlenWidth) *
+                                            IntHop::qlenUnit * IntHop::multi,
+                                "Odin INT queue exceeds compressed field range");
+                const bool tbo =
+                    m_mmu->GetUsedBufferTotal() > m_odinTboRatio * m_mmu->GetMmuBufferBytes();
+                const uint64_t now = Simulator::Now().GetNanoSeconds();
+                ih.PushHopWithRes(now, m_txBytes[ifIndex], queued,
+                                  dev->GetDataRate().GetBitRate(), m_id, ifIndex, tbo);
+                std::memcpy(buf + offset, &ih, IntHeader::resourceWireSize);
+                if (m_odinIntAudit) {
+                    OdinIntTag tag;
+                    p->RemovePacketTag(tag);
+                    tag.measured_ns[hop] = now;
+                    p->AddPacketTag(tag);
+                }
+                m_txBytes[ifIndex] += p->GetSize();
+                return;
+            }
+            IntHeader *ih = (IntHeader *)&buf[offset];  // legacy wire layout
             if (m_ccMode == 9) {
                 NS_ABORT_MSG_IF(uint64_t(dev->GetQueue()->GetNBytesTotal()) >=
                     (uint64_t(1) << IntHop::qlenWidth) * IntHop::qlenUnit * IntHop::multi,
