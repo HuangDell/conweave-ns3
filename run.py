@@ -502,6 +502,8 @@ def main():
                         type=int, default=10000, help="interval of sampling statistics for queue status (default: 10000ns)")
     parser.add_argument('--seed', dest='seed', action='store', type=int,
                         default=1, help="NS-3 random seed recorded in the run manifest (default: 1)")
+    parser.add_argument('--trace-seed', type=int, default=None,
+                        help='Frozen input startup seed, independent of --seed')
     parser.add_argument('--run-id', dest='run_id', action='store', default=None,
                         help="reserve a deterministic output directory; fails if it already exists")
 
@@ -1347,6 +1349,8 @@ def main():
         packet_payload_bytes=args.packet_payload_bytes, link_delay_ns=args.link_delay_ns,
         expected_bdp_bytes=bdp, buffer_bytes=args.buffer_bytes or int(float(buffer) * 1024 * 1024),
         min_rate_mbps=args.min_rate_mbps, odin_log_flow_ids=args.odin_log_flow_ids)
+    if args.trace_seed is not None:
+        manifest.update(trace_seed=args.trace_seed, simulator_seed=args.seed)
     write_json(manifest_path, manifest)
     if args.prepare_only:
         print('Prepared configuration only: ' + config_name)
