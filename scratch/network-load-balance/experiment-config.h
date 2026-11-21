@@ -114,6 +114,18 @@ struct HrlbConfig {
     uint32_t odin_resource_log = 1;
     uint32_t gate_inflight0 = 0;
     uint32_t bg_resource_feedback = 0;
+    uint32_t dyn_depth_enable = 0;
+    uint32_t tail_drain_enable = 0;
+    uint32_t tail_int_guard = 0;
+    double dyn_depth_ratio = 1.5;
+    double tail_drain_eps = 0.15;
+    double svc_ewma_alpha = 0.3;
+    bool UsesPhase2() const {
+        return policy == "seqbal_int" || dyn_depth_enable || tail_drain_enable ||
+               (policy == "wc" && depth == 1);
+    }
+    bool ValidPhase2(uint32_t int_mode, bool periodic) const;
+
     double coord_delta_psi = 0.10;
     double coord_eps_t = 0.25;
     double coord_delta_guard = 0.05;

@@ -160,6 +160,9 @@ void HostResourceLb::VerifyTuplePath(uint32_t src, uint32_t dst, uint16_t sport,
 
 bool HostResourceLb::Initialize() {
     if (!IsEnabled()) return true;
+    NS_ABORT_MSG_IF(!config_.hrlb.ValidPhase2(config_.cc.odin_int_share_mode,
+                                              config_.cc.odin_resource_feedback),
+                    "invalid Phase 2 HRLB configuration");
     NS_ABORT_MSG_IF(config_.hrlb.lb_score_scope != "auto" &&
                         config_.hrlb.lb_score_scope != "full" &&
                         config_.hrlb.lb_score_scope != "divergent", "invalid LB score scope");
@@ -278,10 +281,11 @@ bool HostResourceLb::Initialize() {
         fprintf(tail_output_, "time_ns,event,schedule_seq,message_id,chunk_id,pending_chunks,"
                              "committed_unsent_bytes,inflight_bytes,nominal_lane,chosen_lane,fast_lane_mask\n");
     }
-    return true;
+    return OpenPhase2Audit();
 }
 
 void HostResourceLb::Close() {
+    ClosePhase2Audit();
     if (lane_sample_event_.IsRunning()) lane_sample_event_.Cancel();
     if (lane_output_) { fclose(lane_output_); lane_output_ = NULL; }
     if (tail_output_) { fclose(tail_output_); tail_output_ = NULL; }
@@ -477,6 +481,9 @@ void HostResourceLb::OnWqeComplete(Ptr<RdmaQueuePair> qp, RdmaQueuePair::WqeBoun
     NS_ABORT_MSG_IF(lane >= msg.lanes.size() || msg.lanes[lane].outstanding_wqes == 0,
                     "WQE completion underflow");
     msg.lanes[lane].outstanding_wqes -= 1;
+    if (config_.hrlb.dyn_depth_enable || config_.hrlb.tail_drain_enable) {
+        ObservePhase2Completion(msg.lanes[lane], boundary);
+    }
     msg.completed_chunks += 1;
     msg.completed_bytes += boundary.bytes;
     if (msg.completed_chunks == msg.total_chunks) {
@@ -506,7 +513,7 @@ void HostResourceLb::ResourceDeliveredCallback(HostResourceLb* self, uint32_t ho
 
 void HostResourceLb::OnResourceFrameDelivered(uint32_t host, uint64_t epoch) {
     delivered_epochs_[host] = epoch;
-    if (config_.hrlb.policy != "wc") {
+    if (config_.hrlb.policy != "wc" && config_.hrlb.policy != "seqbal_int") {
         RunSchedule("resource_frame", host);
     }
 }
@@ -543,8 +550,9 @@ bool HostResourceLb::TryCommitOneChunk(MessageState& msg, const char* trigger, u
     uint32_t k = config_.hrlb.k;
     uint32_t d = config_.hrlb.depth;
     const bool work_conserving = config_.hrlb.policy == "wc";
+    const bool phase2 = config_.hrlb.UsesPhase2();
     uint32_t wc_lane = k;
-    if (work_conserving) {
+    if (work_conserving && !phase2) {
         for (uint32_t offset = 0; offset < k; ++offset) {
             uint32_t lane = (msg.target_cursor + offset) % k;
             if (msg.lanes[lane].outstanding_wqes < d) {
@@ -564,6 +572,27 @@ bool HostResourceLb::TryCommitOneChunk(MessageState& msg, const char* trigger, u
                                  : state_.pair_bdp[state_.nodes.Get(msg.src)]
                                                   [state_.nodes.Get(msg.dst)])
                           : 0;
+
+    const char* phase2_reason = nullptr;
+    if (phase2) {
+        wc_lane = ChoosePhase2Lane(msg, seq, trigger, base_rtt, *PeekPointer(driver->m_rdma), &phase2_reason);
+        if (wc_lane == k) {
+            if (phase2_reason) {
+                msg.held_schedule_seq = seq;
+                decision_state_ = DecisionState(msg);
+                const PendingChunk& chunk = msg.pending_chunks.front();
+                uint32_t nominal = (msg.message_id + chunk.chunk_id) % k;
+                uint32_t slots = msg.lanes[nominal].outstanding_wqes;
+                const std::vector<bool> fresh(k, false);
+                const std::vector<double> scores(k, 0.0);
+                const std::vector<uint64_t> unavailable(k, 0);
+                LogDecision(seq, trigger, "blocked", msg, chunk, nominal, nominal, false,
+                            fresh, scores, unavailable, unavailable, slots, slots,
+                            msg.target_cursor, msg.target_cursor, phase2_reason);
+            }
+            return false;
+        }
+    }
 
     bool redirect_active = (config_.hrlb.policy == "redirect") && (config_.hrlb.redirect != 0);
     bool coord_active = (config_.hrlb.policy == "coord") && (config_.hrlb.redirect != 0);
@@ -605,10 +634,10 @@ bool HostResourceLb::TryCommitOneChunk(MessageState& msg, const char* trigger, u
         bool hold_tail = false;
         const char* reason = "nominal";
 
-        if (work_conserving) {
+        if (work_conserving || phase2) {
             // The first iteration is the FIFO head. Nominal is observation only.
             chosen = wc_lane;
-            reason = "wc_slot";
+            reason = phase2 ? phase2_reason : "wc_slot";
         } else if (coord_active) {
             if (!fresh[nominal]) {
                 reason = "source_unknown_fallback";
@@ -765,6 +794,8 @@ bool HostResourceLb::TryCommitOneChunk(MessageState& msg, const char* trigger, u
         }
 
         if (!hold_tail && msg.lanes[chosen].outstanding_wqes < d) {
+            NS_ABORT_MSG_IF(phase2 && msg.lanes[chosen].draining_inherited,
+                            "commit before inherited WQE backlog drained");
             PendingChunk chunk = *it;
             msg.pending_chunks.erase(it);
             LaneState& ls = msg.lanes[chosen];
@@ -777,7 +808,7 @@ bool HostResourceLb::TryCommitOneChunk(MessageState& msg, const char* trigger, u
                 RdmaQueuePair::V5_DATA, true);
             ls.outstanding_wqes += 1;
             ls.scheduled_wqes += 1;
-            if (is_redirect || work_conserving) {
+            if (is_redirect || work_conserving || phase2) {
                 msg.target_cursor = (chosen + 1) % k;
             }
             LogDecision(seq, trigger, "commit", msg, chunk, nominal, chosen, is_redirect, fresh,

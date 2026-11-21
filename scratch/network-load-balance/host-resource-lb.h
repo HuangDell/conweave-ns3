@@ -84,6 +84,11 @@ class HostResourceLb {
         std::vector<ns3::RdmaHw::OdinResourceKey> div_resources;
         uint32_t outstanding_wqes = 0;
         uint64_t scheduled_wqes = 0;
+        bool has_tau_svc = false;
+        double tau_svc_ns = 0.0;
+        uint32_t last_d_eff = 2;
+        bool draining_inherited = false;
+        uint64_t inherited_since_ns = 0;
     };
 
     struct MessageState {
@@ -126,6 +131,11 @@ class HostResourceLb {
     void SampleLanes();
     std::string DecisionState(const MessageState& msg) const;
     bool TryCommitOneChunk(MessageState& msg, const char* trigger, uint64_t seq);
+    bool OpenPhase2Audit();
+    void ClosePhase2Audit();
+    void ObservePhase2Completion(LaneState& lane, const ns3::RdmaQueuePair::WqeBoundary& boundary);
+    uint32_t ChoosePhase2Lane(MessageState& msg, uint64_t seq, const char* trigger,
+                              uint64_t base_rtt, const ns3::RdmaHw& hw, const char** reason);
     void SealMessage(MessageState& msg);
     void VerifyTuplePath(uint32_t src, uint32_t dst, uint16_t sport, uint16_t dport, uint16_t pg,
                          const std::vector<uint32_t>& expected_hops,
@@ -156,6 +166,10 @@ class HostResourceLb {
     std::set<uint32_t> post_ack_hosts_;
     ns3::EventId lane_sample_event_;
     std::string decision_state_;
+    FILE* phase2_audit_ = nullptr;
+    FILE* phase2_summary_ = nullptr;
+    std::map<std::string, uint64_t> phase2_counts_;
+    std::vector<uint64_t> phase2_inherited_drain_ns_;
     FILE* lane_output_ = NULL;
     FILE* tail_output_ = NULL;
     FILE* decision_output_ = NULL;

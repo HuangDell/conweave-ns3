@@ -42,10 +42,14 @@ bool ConfigureSimulationDefaults(const ExperimentConfig& config) {
         return false;
     }
 
+    if (!config.hrlb.ValidPhase2(config.cc.odin_int_share_mode, config.cc.odin_resource_feedback)) {
+        std::cerr << "Invalid Phase 2 HRLB configuration\n";
+        return false;
+    }
     bool real_int = config.cc.odin_int_share_mode != 0;
     if (real_int &&
         (config.cc.mode != CC_MODE_ODIN || config.cc.odin_int_share_mode > 4 ||
-         !config.hrlb.enable || config.hrlb.policy != "wc" || config.hrlb.redirect ||
+         !config.hrlb.enable || (config.hrlb.policy != "wc" && config.hrlb.policy != "seqbal_int") || config.hrlb.redirect ||
          config.cc.odin_resource_feedback || config.hrlb.bg_resource_feedback ||
          !config.cc.odin_int_window_ns || config.cc.odin_int_window_ns >= (1u << 23) ||
          !config.cc.odin_int_freshness_ns || !config.cc.odin_int_probe_interval_ns)) {
@@ -66,7 +70,8 @@ bool ConfigureSimulationDefaults(const ExperimentConfig& config) {
             !config.host_sensing.enable;
         bool valid_ack_hrlb =
             config.cc.odin_resource_feedback == 0 &&
-            (config.hrlb.policy == "uniform" || config.hrlb.policy == "wc") &&
+            (config.hrlb.policy == "uniform" || config.hrlb.policy == "wc" ||
+             (config.hrlb.policy == "seqbal_int" && real_int)) &&
             !config.hrlb.redirect && (!config.hrlb.gate_inflight0 || real_int) &&
             !config.hrlb.bg_resource_feedback;
         bool valid_hrlb_odin =
@@ -75,7 +80,9 @@ bool ConfigureSimulationDefaults(const ExperimentConfig& config) {
             config.traffic.v5_nsub == 1 && !config.traffic.v5_chunk_bytes &&
             !config.traffic.v5_estimator_enable && !config.host_sensing.enable &&
             (config.hrlb.policy == "uniform" || config.hrlb.policy == "redirect" ||
-             config.hrlb.policy == "coord" || (config.hrlb.policy == "wc" && !config.hrlb.redirect)) &&
+             config.hrlb.policy == "coord" ||
+             ((config.hrlb.policy == "wc" || (config.hrlb.policy == "seqbal_int" && real_int)) &&
+              !config.hrlb.redirect)) &&
             config.hrlb.k >= 1 && config.hrlb.chunk_bytes >= 1 && config.hrlb.depth >= 1 &&
             config.hrlb.theta > 0.0 && config.hrlb.coord_delta_psi >= 0.0 &&
             config.hrlb.coord_eps_t >= 0.0 && config.hrlb.coord_delta_guard >= 0.0;

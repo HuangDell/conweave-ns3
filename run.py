@@ -412,9 +412,29 @@ def validate_physical_options(args):
     args.odin_log_flow_ids = sorted(ids)
 
 
+HRLB_PHASE2_OPTIONS = (
+    ('dyn_depth_enable', 'HRLB_DYN_DEPTH_ENABLE', 'hrlb_dyn_depth', 0),
+    ('tail_drain_enable', 'HRLB_TAIL_DRAIN_ENABLE', 'hrlb_tail_drain', 0),
+    ('tail_int_guard', 'HRLB_TAIL_INT_GUARD', 'hrlb_tail_int_guard', 0),
+    ('dyn_depth_ratio', 'HRLB_DYN_DEPTH_RATIO', 'hrlb_dyn_depth_ratio', 1.5),
+    ('tail_drain_eps', 'HRLB_TAIL_DRAIN_EPS', 'hrlb_tail_drain_eps', 0.15),
+    ('svc_ewma_alpha', 'HRLB_SVC_EWMA_ALPHA', 'hrlb_svc_ewma_alpha', 0.3),
+)
+
+
 def validate_odin_options(args):
     """Reject unsupported Odin combinations before allocating outputs or inputs."""
     real_int = args.odin_int_share_mode != 0
+    seqbal = args.hrlb_policy == 'seqbal_int'
+    actions = args.hrlb_dyn_depth or args.hrlb_tail_drain
+    if (not math.isfinite(args.hrlb_dyn_depth_ratio) or args.hrlb_dyn_depth_ratio <= 1 or
+            not math.isfinite(args.hrlb_tail_drain_eps) or args.hrlb_tail_drain_eps < 0 or
+            not 0 < args.hrlb_svc_ewma_alpha <= 1 or
+            (args.hrlb_tail_int_guard and (not args.hrlb_tail_drain or args.odin_int_share_mode < 2)) or
+            (actions and (not args.hrlb_enable or args.hrlb_policy != 'wc' or args.hrlb_redirect or
+                          args.odin_resource_feedback or args.hrlb_depth != 2)) or
+            (seqbal and (not args.hrlb_enable or args.odin_int_share_mode < 2 or args.hrlb_depth != 2))):
+        raise ValueError('Invalid Phase 2 HRLB configuration')
     if args.hrlb_gate_inflight0 == 2 and not real_int:
         raise ValueError('--hrlb-gate-inflight0 2 requires extended INT ACK feedback')
     if args.cc != 'odin':
@@ -422,7 +442,7 @@ def validate_odin_options(args):
                 args.odin_int_share_mode or args.odin_int_audit):
             raise ValueError('--odin-log, --odin-resource-feedback, and --hrlb-enable require --cc odin')
         return
-    if real_int and (not args.hrlb_enable or args.hrlb_policy != 'wc' or args.hrlb_redirect or
+    if real_int and (not args.hrlb_enable or args.hrlb_policy not in ('wc', 'seqbal_int') or args.hrlb_redirect or
                      args.odin_resource_feedback or args.hrlb_bg_resource_feedback):
         raise ValueError('Extended INT requires ACK Odin and WC HRLB without periodic reports')
     if real_int and (args.odin_int_min_update_ns < 0 or
@@ -444,11 +464,11 @@ def validate_odin_options(args):
             raise ValueError('HRLB requires --cc odin --lb fecmp --v5_qp_pool 1 --v5_qp_pool_size K '
                              '--v5_nsub 1 --v5_chunk_bytes 0, PFC=1, IRN=0')
         if not args.odin_resource_feedback and (
-                args.hrlb_policy not in ('uniform', 'wc') or args.hrlb_redirect or
+                (args.hrlb_policy not in ('uniform', 'wc') and not (seqbal and real_int)) or args.hrlb_redirect or
                 (args.hrlb_gate_inflight0 and not real_int) or args.hrlb_bg_resource_feedback or
                 args.odin_resource_log):
             raise ValueError('ACK HRLB requires uniform or wc with redirect, resource gate and background subscription off')
-        if args.hrlb_policy == 'wc' and args.hrlb_redirect:
+        if args.hrlb_policy in ('wc', 'seqbal_int') and args.hrlb_redirect:
             raise ValueError('WC HRLB requires --hrlb-redirect 0')
         if (args.hrlb_k < 1 or args.hrlb_chunk_bytes < 1 or args.hrlb_depth < 1 or
                 not math.isfinite(args.hrlb_theta) or args.hrlb_theta <= 0 or
@@ -684,11 +704,17 @@ def main():
     parser.add_argument('--odin-resource-start-ns', type=int, default=2001000000)
     parser.add_argument('--flowgen-start-time', type=float, default=FLOWGEN_DEFAULT_TIME)
     parser.add_argument('--hrlb-enable', type=int, choices=(0, 1), default=0)
-    parser.add_argument('--hrlb-policy', choices=('uniform', 'redirect', 'coord', 'wc'), default='uniform')
+    parser.add_argument('--hrlb-policy', choices=('uniform', 'redirect', 'coord', 'wc', 'seqbal_int'), default='uniform')
     parser.add_argument('--hrlb-redirect', type=int, choices=(0, 1), default=0)
     parser.add_argument('--hrlb-k', type=int, default=4)
     parser.add_argument('--hrlb-chunk-bytes', type=int, default=64000)
     parser.add_argument('--hrlb-depth', type=int, default=2)
+    parser.add_argument('--hrlb-dyn-depth', type=int, choices=(0, 1), default=0)
+    parser.add_argument('--hrlb-tail-drain', type=int, choices=(0, 1), default=0)
+    parser.add_argument('--hrlb-tail-int-guard', type=int, choices=(0, 1), default=0)
+    parser.add_argument('--hrlb-dyn-depth-ratio', type=float, default=1.5)
+    parser.add_argument('--hrlb-tail-drain-eps', type=float, default=0.15)
+    parser.add_argument('--hrlb-svc-ewma-alpha', type=float, default=0.3)
     parser.add_argument('--hrlb-theta', type=float, default=1.0)
     parser.add_argument('--hrlb-freshness-ns', type=int, default=16000)
     parser.add_argument('--hrlb-mapping-version', type=int, default=1)
@@ -1221,6 +1247,12 @@ def main():
                 config += f"HRLB_BG_RESOURCE_FEEDBACK {args.hrlb_bg_resource_feedback}\n"
             if args.hrlb_lb_score_scope != 'auto':
                 config += f"HRLB_LB_SCORE_SCOPE {args.hrlb_lb_score_scope}\n"
+            for _, key, option, default in HRLB_PHASE2_OPTIONS:
+                value = getattr(args, option)
+                if value != default:
+                    config += f'{key} {value}\n'
+            if (args.hrlb_policy == 'seqbal_int' or args.hrlb_tail_int_guard) and args.hrlb_coord_delta_guard != 0.05:
+                config += f"HRLB_COORD_DELTA_GUARD {args.hrlb_coord_delta_guard}\n"
             if args.hrlb_policy == 'coord':
                 config += (
                     f"HRLB_COORD_DELTA_PSI {args.hrlb_coord_delta_psi}\n"
@@ -1384,6 +1416,8 @@ def main():
                 feedback='periodic' if args.odin_resource_feedback else 'ack',
                 tuple_file=os.path.abspath(args.hrlb_tuple_file),
                 tuple_sha256=sha256_file(os.path.abspath(args.hrlb_tuple_file)))
+            manifest['config']['hrlb'].update(
+                {field: getattr(args, option) for field, _, option, _ in HRLB_PHASE2_OPTIONS})
     manifest['config']['physical'] = dict(
         packet_payload_bytes=args.packet_payload_bytes, link_delay_ns=args.link_delay_ns,
         expected_bdp_bytes=bdp, buffer_bytes=args.buffer_bytes or int(float(buffer) * 1024 * 1024),

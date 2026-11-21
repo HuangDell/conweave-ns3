@@ -178,6 +178,47 @@ void RdmaHw::ForgetSharedIntPath(uint64_t key) {
     m_odinIntPaths.erase(path);
 }
 
+const char* RdmaHw::ReadOdinIntHop(const OdinResourceKey& resource, uint64_t now,
+                                  uint64_t base_rtt_ns, double* score, bool* tbo,
+                                  uint64_t* rx, uint64_t* dt, uint64_t* measured) const {
+    auto cached = m_odinIntCache.find(resource);
+    if (cached == m_odinIntCache.end() || cached->second.empty()) return "stale_or_missing_hop";
+    const auto& history = cached->second;
+    const auto& current = history.back();
+    *rx = current.rx_ns;
+    *measured = current.true_measured_ns;
+    *dt = current.time_ns - history.front().time_ns;
+    if (now - *rx > m_odinIntFreshnessNs) return "stale_or_missing_hop";
+    if (*dt < m_odinIntWindowNs) return "cache_not_ready";
+    double mu = current.hop.GetBytesDelta(history.front().hop) * 8e9 / *dt;
+    double line = current.hop.GetLineRate();
+    *score = std::max(*score, mu / line + current.hop.GetQlen() * 8e9 / (line * base_rtt_ns));
+    *tbo |= current.tbo;
+    return nullptr;
+}
+
+bool RdmaHw::QueryOdinIntScore(const std::vector<OdinResourceKey>& resources, uint64_t base_rtt_ns,
+                               double* score, bool* tbo, uint64_t* max_age_ns) const {
+    *score = 0.0;
+    *tbo = false;
+    *max_age_ns = 0;
+    if (resources.empty() || !base_rtt_ns) return false;
+    const uint64_t now = Simulator::Now().GetNanoSeconds();
+    double psi = 0.0;
+    bool saw_tbo = false;
+    uint64_t age = 0;
+    for (const auto& resource : resources) {
+        uint64_t rx = 0, dt = 0, measured = 0;
+        if (ReadOdinIntHop(resource, now, base_rtt_ns, &psi, &saw_tbo, &rx, &dt, &measured))
+            return false;
+        age = std::max(age, now - rx);
+    }
+    *score = psi;
+    *tbo = saw_tbo;
+    *max_age_ns = age;
+    return true;
+}
+
 bool RdmaHw::TrySharedIntFeedback(Ptr<RdmaQueuePair> qp, uint64_t key, uint64_t ack_uid,
                                   const char* trigger, uint32_t seq, bool apply) {
     if (!qp || !qp->odin.active || !qp->GetBytesLeft()) return false;
@@ -188,27 +229,9 @@ bool RdmaHw::TrySharedIntFeedback(Ptr<RdmaQueuePair> qp, uint64_t key, uint64_t 
     double psi = 0;
     bool tbo = false;
     for (const auto& resource : path->second) {
-        auto cached = m_odinIntCache.find(resource);
-        const char* reason = "stale_or_missing_hop";
         uint64_t rx = 0, dt = 0, measured = 0;
-        if (cached != m_odinIntCache.end()) {
-            const auto& history = cached->second;
-            const auto& current = history.back();
-            rx = current.rx_ns;
-            measured = current.true_measured_ns;
-            dt = current.time_ns - history.front().time_ns;
-            if (now - rx <= m_odinIntFreshnessNs) {
-                reason = "cache_not_ready";
-                if (dt >= m_odinIntWindowNs) {
-                    double mu = current.hop.GetBytesDelta(history.front().hop) * 8e9 / dt;
-                    double line = current.hop.GetLineRate();
-                    psi = std::max(psi, mu / line + current.hop.GetQlen() * 8e9 /
-                                                    (line * qp->m_baseRtt));
-                    tbo |= current.tbo;
-                    reason = nullptr;
-                }
-            }
-        }
+        const char* reason = ReadOdinIntHop(resource, now, qp->m_baseRtt, &psi, &tbo,
+                                            &rx, &dt, &measured);
         TraceInt(trigger, ack_uid, key, reason ? reason : "ready", resource, rx, dt, measured);
         if (reason && (!blocked || std::strcmp(reason, "stale_or_missing_hop") == 0))
             blocked = reason;
@@ -233,6 +256,7 @@ void RdmaHw::HandleSharedIntAck(Ptr<RdmaQueuePair> qp, uint64_t key, Ptr<const P
     const uint64_t uid = packet->GetUid();
     const bool probe = ih.IsProbe();
     const uint32_t hops = ih.GetHopCount();
+    if (m_odinIntAudit) ++m_odinIntAuditAckCount;
     TraceInt("ack", uid, key, probe ? "probe" : "data", OdinResourceKey(), 0, 0, 0, ch.ack.seq);
     if (!hops || hops > IntHeader::maxHop) {
         TraceInt("sample", uid, key, "invalid_hops");

@@ -1,9 +1,21 @@
 #include "experiment-config.h"
 
+#include <cmath>
 #include <fstream>
 #include <iostream>
 
 namespace nlb {
+
+bool HrlbConfig::ValidPhase2(uint32_t int_mode, bool periodic) const {
+    return dyn_depth_enable <= 1 && tail_drain_enable <= 1 && tail_int_guard <= 1 &&
+           std::isfinite(dyn_depth_ratio) && dyn_depth_ratio > 1.0 &&
+           std::isfinite(tail_drain_eps) && tail_drain_eps >= 0.0 &&
+           svc_ewma_alpha > 0.0 && svc_ewma_alpha <= 1.0 &&
+           (!tail_int_guard || (tail_drain_enable && int_mode >= 2)) &&
+           (!(dyn_depth_enable || tail_drain_enable) ||
+            (enable && policy == "wc" && !redirect && !periodic && depth == 2)) &&
+           (policy != "seqbal_int" || (enable && int_mode >= 2 && !periodic && !redirect && depth == 2));
+}
 
 bool LoadExperimentConfig(const std::string& path, ExperimentConfig* config) {
     std::ifstream conf(path.c_str());
@@ -54,6 +66,18 @@ bool LoadExperimentConfig(const std::string& path, ExperimentConfig* config) {
             conf >> config->hrlb.gate_inflight0;
         } else if (key == "HRLB_BG_RESOURCE_FEEDBACK") {
             conf >> config->hrlb.bg_resource_feedback;
+        } else if (key == "HRLB_DYN_DEPTH_ENABLE") {
+            if (!(conf >> config->hrlb.dyn_depth_enable)) return false;
+        } else if (key == "HRLB_TAIL_DRAIN_ENABLE") {
+            if (!(conf >> config->hrlb.tail_drain_enable)) return false;
+        } else if (key == "HRLB_TAIL_INT_GUARD") {
+            if (!(conf >> config->hrlb.tail_int_guard)) return false;
+        } else if (key == "HRLB_DYN_DEPTH_RATIO") {
+            if (!(conf >> config->hrlb.dyn_depth_ratio)) return false;
+        } else if (key == "HRLB_TAIL_DRAIN_EPS") {
+            if (!(conf >> config->hrlb.tail_drain_eps)) return false;
+        } else if (key == "HRLB_SVC_EWMA_ALPHA") {
+            if (!(conf >> config->hrlb.svc_ewma_alpha)) return false;
         } else if (key == "HRLB_COORD_DELTA_PSI") {
             conf >> config->hrlb.coord_delta_psi;
         } else if (key == "HRLB_COORD_EPS_T") {

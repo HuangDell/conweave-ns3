@@ -120,6 +120,9 @@ class RdmaHw : public Object {
                                    bool* tbo, uint64_t* max_age_ns, uint64_t* min_version,
                                    OdinResourceSample* bottleneck_sample,
                                    const char** reason) const;
+    bool QueryOdinIntScore(const std::vector<OdinResourceKey>& resources, uint64_t base_rtt_ns,
+                           double* score, bool* tbo, uint64_t* max_age_ns) const;
+    uint64_t GetOdinIntAuditAckCount() const { return m_odinIntAuditAckCount; }
     bool QueryOdinPathScore(uint64_t qp_key, uint64_t base_rtt_ns, double* score, bool* tbo,
                             uint64_t* max_age_ns, uint64_t* min_version,
                             OdinResourceSample* bottleneck_sample, const char** reason) const;
@@ -305,6 +308,10 @@ class RdmaHw : public Object {
     };
     typedef std::vector<OdinResourceKey> OdinIntPath;
     std::map<OdinResourceKey, std::deque<OdinIntSample>> m_odinIntCache;
+    uint64_t m_odinIntAuditAckCount = 0;
+    const char* ReadOdinIntHop(const OdinResourceKey& resource, uint64_t now, uint64_t base_rtt_ns,
+                               double* score, bool* tbo, uint64_t* rx, uint64_t* dt,
+                               uint64_t* measured) const;
     std::map<uint64_t, OdinIntPath> m_odinIntPaths;
     std::map<OdinResourceKey, std::set<uint64_t>> m_odinIntSubscribers;
     std::map<OdinIntPath, uint64_t> m_odinIntLastProbe;
