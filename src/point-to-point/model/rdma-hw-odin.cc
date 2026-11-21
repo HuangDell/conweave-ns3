@@ -108,7 +108,7 @@ void RdmaHw::HandleAckOdin(Ptr<RdmaQueuePair> qp, CustomHeader& ch, Ptr<const Pa
     baseline();
     if (m_odinIntShareMode == 1) {
         const bool applied = ApplyIntFeedback(qp, qp_key, m_odinIntMinUpdateNs, psi,
-                                              ih.HasTbo(), event);
+                                              ih.HasTbo(), event, false);
         TraceInt("pace", packet->GetUid(), qp_key, applied ? "update" : event.reason);
         return;
     }
@@ -134,7 +134,7 @@ void RdmaHw::TraceInt(const char* event, uint64_t ack_uid, uint64_t key, const c
 }
 
 bool RdmaHw::ApplyIntFeedback(Ptr<RdmaQueuePair> qp, uint64_t key, uint64_t interval_ns,
-                              double psi, bool tbo, OdinEvent& event) {
+                              double psi, bool tbo, OdinEvent& event, bool is_async_trigger) {
     uint64_t now = Simulator::Now().GetNanoSeconds();
     auto skip = [&](const char* reason) {
         event.reason = reason;
@@ -149,7 +149,9 @@ bool RdmaHw::ApplyIntFeedback(Ptr<RdmaQueuePair> qp, uint64_t key, uint64_t inte
     auto& controller = m_nic[qp->odin.nic].odin;
     const uint64_t beta = m_odinBeta.GetBitRate();
     const uint64_t minimum = m_minRate.GetBitRate();
-    if (m_odinGateInflight0 && !qp->GetOnTheFly() &&
+    const bool gate_active =
+        m_odinGateInflight0 == 1 || (m_odinGateInflight0 == 2 && is_async_trigger);
+    if (gate_active && !qp->GetOnTheFly() &&
         controller.PreviewFeedback(key, psi, tbo, m_odinEta, m_odinGamma, beta,
                                    minimum).rate < qp->m_rate.GetBitRate()) {
         return skip("inflight0_no_decrease");
@@ -219,7 +221,8 @@ bool RdmaHw::TrySharedIntFeedback(Ptr<RdmaQueuePair> qp, uint64_t key, uint64_t 
     event.reason = trigger;
     event.ack_seq = seq;
     // The frozen foreign threshold T_share is the same as T_min.
-    const bool updated = ApplyIntFeedback(qp, key, m_odinIntMinUpdateNs, psi, tbo, event);
+    const bool is_async = std::strcmp(trigger, "self") != 0;
+    const bool updated = ApplyIntFeedback(qp, key, m_odinIntMinUpdateNs, psi, tbo, event, is_async);
     TraceInt("candidate", ack_uid, key, updated ? "update" : event.reason);
     return updated;
 }
@@ -539,6 +542,8 @@ uint32_t RdmaHw::ApplyOdinMultiHopResourceFeedback(
     uint64_t version, const std::vector<OdinResourceSample>& samples) {
     NS_ABORT_MSG_IF(!m_odinResourceFeedback || m_cc_mode != CC_MODE_ODIN,
                     "multi-hop resource feedback requires explicit Odin opt-in");
+    NS_ABORT_MSG_IF(m_odinGateInflight0 > 1,
+                    "periodic resource feedback supports gate_inflight0 in {0,1} only");
     if (version <= m_odinResourceVersion) return 0;
     m_odinResourceVersion = version;
     uint64_t now = Simulator::Now().GetNanoSeconds();
@@ -625,7 +630,7 @@ uint32_t RdmaHw::ApplyOdinMultiHopResourceFeedback(
             TraceOdin(q, e);
             continue;
         }
-        if (m_odinGateInflight0 && q->m_persistent && q->GetOnTheFly() == 0) {
+        if (m_odinGateInflight0 == 1 && q->m_persistent && q->GetOnTheFly() == 0) {
             OdinController::Update preview = m_nic[q->odin.nic].odin.PreviewFeedback(
                 qp_key, psi, tbo, m_odinEta, m_odinGamma, m_odinBeta.GetBitRate(),
                 m_minRate.GetBitRate());

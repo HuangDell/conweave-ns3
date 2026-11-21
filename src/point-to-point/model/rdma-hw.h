@@ -67,7 +67,7 @@ class RdmaHw : public Object {
     void TraceOdin(Ptr<RdmaQueuePair> qp, OdinEvent event);
     bool m_odinResourceFeedback = false;
     bool m_odinAllowPersistent = false;
-    bool m_odinGateInflight0 = false;
+    uint32_t m_odinGateInflight0 = 0; // 0: off, 1: all, 2: async_only
     uint32_t m_odinIntShareMode = 0;
     uint64_t m_odinIntMinUpdateNs = 8000, m_odinIntWindowNs = 8000;
     uint64_t m_odinIntFreshnessNs = 16000, m_odinIntProbeIntervalNs = 16000;
@@ -314,7 +314,7 @@ class RdmaHw : public Object {
                             const CustomHeader& ch);
     void ForgetSharedIntPath(uint64_t key);
     bool ApplyIntFeedback(Ptr<RdmaQueuePair> qp, uint64_t key, uint64_t interval_ns,
-                          double psi, bool tbo, OdinEvent& event);
+                          double psi, bool tbo, OdinEvent& event, bool is_async_trigger = false);
     bool TrySharedIntFeedback(Ptr<RdmaQueuePair> qp, uint64_t key, uint64_t ack_uid,
                               const char* trigger, uint32_t seq, bool apply);
     void TraceInt(const char* event, uint64_t ack_uid, uint64_t key, const char* reason,

@@ -99,6 +99,9 @@ bool ConfigureSimulationDefaults(const ExperimentConfig& config) {
 
 void InstallRdmaHosts(const ExperimentConfig& config, SimulationState& state, uint64_t irn_bdp,
                       SimulationMonitor& monitor) {
+    NS_ABORT_MSG_IF(config.hrlb.gate_inflight0 > 2 ||
+                        (config.hrlb.gate_inflight0 == 2 && !config.cc.odin_int_share_mode),
+                    "invalid HRLB_GATE_INFLIGHT0 mode");
     for (uint32_t i = 0; i < state.node_num; ++i) {
         if (state.nodes.Get(i)->GetNodeType() != 0) {
             continue;
@@ -125,8 +128,7 @@ void InstallRdmaHosts(const ExperimentConfig& config, SimulationState& state, ui
         hardware->m_odinIntWindowNs = config.cc.odin_int_window_ns;
         hardware->m_odinIntFreshnessNs = config.cc.odin_int_freshness_ns;
         hardware->m_odinIntProbeIntervalNs = config.cc.odin_int_probe_interval_ns;
-        hardware->m_odinGateInflight0 =
-            (config.hrlb.enable != 0 && config.hrlb.gate_inflight0 != 0);
+        hardware->m_odinGateInflight0 = config.hrlb.enable ? config.hrlb.gate_inflight0 : 0;
         hardware->m_odinResourceFreshnessNs = config.hrlb.freshness_ns;
         hardware->m_odinResourceWindowNs = config.cc.odin_resource_window_ns;
         hardware->m_odinExpectedMappingVersion = config.hrlb.mapping_version;

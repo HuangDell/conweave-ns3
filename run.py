@@ -227,7 +227,7 @@ def direct_run_env():
     else:
         path_var = "LD_LIBRARY_PATH"
 
-    lib_dir = os.path.abspath(SIM_BUILD_DIR)
+    lib_dir = str(Path(__file__).resolve().parent / SIM_BUILD_DIR)
     current_path = env.get(path_var)
     env[path_var] = os.pathsep.join(
         [lib_dir, current_path] if current_path else [lib_dir])
@@ -312,8 +312,7 @@ def sha256_file(path):
 
 def runtime_binary_metadata(path):
     absolute_binary = os.path.abspath(path)
-    build_root = os.path.abspath(SIM_BUILD_DIR)
-    sim_env, _, _ = direct_run_env()
+    sim_env, _, build_root = direct_run_env()
     artifacts = {absolute_binary}
     if sys.platform.startswith("linux"):
         output = subprocess.check_output(
@@ -415,12 +414,14 @@ def validate_physical_options(args):
 
 def validate_odin_options(args):
     """Reject unsupported Odin combinations before allocating outputs or inputs."""
+    real_int = args.odin_int_share_mode != 0
+    if args.hrlb_gate_inflight0 == 2 and not real_int:
+        raise ValueError('--hrlb-gate-inflight0 2 requires extended INT ACK feedback')
     if args.cc != 'odin':
         if (args.odin_log or args.odin_resource_feedback or args.hrlb_enable or
                 args.odin_int_share_mode or args.odin_int_audit):
             raise ValueError('--odin-log, --odin-resource-feedback, and --hrlb-enable require --cc odin')
         return
-    real_int = args.odin_int_share_mode != 0
     if real_int and (not args.hrlb_enable or args.hrlb_policy != 'wc' or args.hrlb_redirect or
                      args.odin_resource_feedback or args.hrlb_bg_resource_feedback):
         raise ValueError('Extended INT requires ACK Odin and WC HRLB without periodic reports')
@@ -692,7 +693,7 @@ def main():
     parser.add_argument('--hrlb-freshness-ns', type=int, default=16000)
     parser.add_argument('--hrlb-mapping-version', type=int, default=1)
     parser.add_argument('--hrlb-decision-log', type=int, choices=(0, 1), default=0)
-    parser.add_argument('--hrlb-gate-inflight0', type=int, choices=(0, 1), default=0)
+    parser.add_argument('--hrlb-gate-inflight0', type=int, choices=(0, 1, 2), default=0)
     parser.add_argument('--hrlb-bg-resource-feedback', type=int, choices=(0, 1), default=0)
     parser.add_argument('--hrlb-lb-score-scope', choices=('auto', 'full', 'divergent'), default='auto')
     parser.add_argument('--hrlb-coord-delta-psi', type=float, default=0.10)
@@ -1357,6 +1358,8 @@ def main():
                 min_update_ns=args.odin_int_min_update_ns, window_ns=args.odin_int_window_ns,
                 freshness_ns=args.odin_int_freshness_ns, probe_interval_ns=args.odin_int_probe_interval_ns,
                 audit=args.odin_int_audit)
+            if args.odin_int_share_mode and args.hrlb_gate_inflight0 == 2:
+                manifest['config']['odin']['real_int']['gate_inflight0_mode'] = 2
         if args.hrlb_enable:
             manifest['config']['hrlb'] = dict(
                 policy=args.hrlb_policy, redirect=args.hrlb_redirect, k=args.hrlb_k,
