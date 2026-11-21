@@ -429,10 +429,15 @@ def validate_odin_options(args):
     if args.hrlb_enable:
         if (args.lb != 'fecmp' or not args.v5_qp_pool or args.v5_qp_pool_size != args.hrlb_k or
                 args.v5_nsub != 1 or args.v5_chunk_bytes or args.v5_estimator_enable or
-                args.host_sensing_enable or args.irn or args.pfc != 1 or args.degrade_link or
-                not args.odin_resource_feedback):
+                args.host_sensing_enable or args.irn or args.pfc != 1 or args.degrade_link):
             raise ValueError('HRLB requires --cc odin --lb fecmp --v5_qp_pool 1 --v5_qp_pool_size K '
-                             '--v5_nsub 1 --v5_chunk_bytes 0 --odin-resource-feedback 1, PFC=1, IRN=0')
+                             '--v5_nsub 1 --v5_chunk_bytes 0, PFC=1, IRN=0')
+        if not args.odin_resource_feedback and (
+                args.hrlb_policy not in ('uniform', 'wc') or args.hrlb_redirect or
+                args.hrlb_gate_inflight0 or args.hrlb_bg_resource_feedback or args.odin_resource_log):
+            raise ValueError('ACK HRLB requires uniform or wc with redirect, resource gate and background subscription off')
+        if args.hrlb_policy == 'wc' and args.hrlb_redirect:
+            raise ValueError('WC HRLB requires --hrlb-redirect 0')
         if (args.hrlb_k < 1 or args.hrlb_chunk_bytes < 1 or args.hrlb_depth < 1 or
                 not math.isfinite(args.hrlb_theta) or args.hrlb_theta <= 0 or
                 not math.isfinite(args.hrlb_coord_delta_psi) or args.hrlb_coord_delta_psi < 0 or
@@ -661,7 +666,7 @@ def main():
     parser.add_argument('--odin-resource-start-ns', type=int, default=2001000000)
     parser.add_argument('--flowgen-start-time', type=float, default=FLOWGEN_DEFAULT_TIME)
     parser.add_argument('--hrlb-enable', type=int, choices=(0, 1), default=0)
-    parser.add_argument('--hrlb-policy', choices=('uniform', 'redirect', 'coord'), default='uniform')
+    parser.add_argument('--hrlb-policy', choices=('uniform', 'redirect', 'coord', 'wc'), default='uniform')
     parser.add_argument('--hrlb-redirect', type=int, choices=(0, 1), default=0)
     parser.add_argument('--hrlb-k', type=int, default=4)
     parser.add_argument('--hrlb-chunk-bytes', type=int, default=64000)
@@ -1165,7 +1170,8 @@ def main():
                 config += ('ODIN_RESOURCE_DESTINATIONS ' + str(len(args.odin_resource_destinations)) + ' ' +
                            ' '.join(map(str, args.odin_resource_destinations)) + '\n')
         if args.hrlb_enable:
-            resource_log = args.odin_log if args.odin_resource_log is None else args.odin_resource_log
+            resource_log = int(bool(args.odin_resource_feedback)) * (
+                args.odin_log if args.odin_resource_log is None else args.odin_resource_log)
             tuple_abs = os.path.abspath(args.hrlb_tuple_file)
             if not exists(tuple_abs):
                 raise FileNotFoundError(tuple_abs)
@@ -1342,7 +1348,8 @@ def main():
                 decision_dedup=args.hrlb_decision_dedup,
                 audit_log=args.hrlb_audit_log,
                 monitor_full_window=args.hrlb_monitor_full_window,
-                odin_resource_log=(args.odin_log if args.odin_resource_log is None else args.odin_resource_log),
+                odin_resource_log=resource_log,
+                feedback='periodic' if args.odin_resource_feedback else 'ack',
                 tuple_file=os.path.abspath(args.hrlb_tuple_file),
                 tuple_sha256=sha256_file(os.path.abspath(args.hrlb_tuple_file)))
     manifest['config']['physical'] = dict(

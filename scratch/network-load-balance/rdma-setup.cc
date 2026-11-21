@@ -54,13 +54,17 @@ bool ConfigureSimulationDefaults(const ExperimentConfig& config) {
             !config.hrlb.enable && !config.traffic.v5_qp_pool && config.traffic.v5_nsub == 1 &&
             !config.traffic.v5_chunk_bytes && !config.traffic.v5_estimator_enable &&
             !config.host_sensing.enable;
+        bool valid_ack_hrlb =
+            config.cc.odin_resource_feedback == 0 &&
+            (config.hrlb.policy == "uniform" || config.hrlb.policy == "wc") &&
+            !config.hrlb.redirect && !config.hrlb.gate_inflight0 && !config.hrlb.bg_resource_feedback;
         bool valid_hrlb_odin =
-            config.hrlb.enable == 1 && config.cc.odin_resource_feedback == 1 &&
+            config.hrlb.enable == 1 && (config.cc.odin_resource_feedback == 1 || valid_ack_hrlb) &&
             config.traffic.v5_qp_pool == 1 && config.traffic.v5_qp_pool_size == config.hrlb.k &&
             config.traffic.v5_nsub == 1 && !config.traffic.v5_chunk_bytes &&
             !config.traffic.v5_estimator_enable && !config.host_sensing.enable &&
             (config.hrlb.policy == "uniform" || config.hrlb.policy == "redirect" ||
-             config.hrlb.policy == "coord") &&
+             config.hrlb.policy == "coord" || (config.hrlb.policy == "wc" && !config.hrlb.redirect)) &&
             config.hrlb.k >= 1 && config.hrlb.chunk_bytes >= 1 && config.hrlb.depth >= 1 &&
             config.hrlb.theta > 0.0 && config.hrlb.coord_delta_psi >= 0.0 &&
             config.hrlb.coord_eps_t >= 0.0 && config.hrlb.coord_delta_guard >= 0.0;

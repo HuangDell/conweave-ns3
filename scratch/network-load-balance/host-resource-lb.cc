@@ -415,7 +415,8 @@ void HostResourceLb::StartAddedMessages() {
         std::vector<double> scores(config_.hrlb.k, 0.0);
         std::vector<uint64_t> versions(config_.hrlb.k, 0);
         std::vector<uint64_t> ages(config_.hrlb.k, 0);
-        for (uint32_t l = 0; l < config_.hrlb.k; ++l) {
+        const bool observe_path_scores = config_.hrlb.policy != "wc" && config_.cc.odin_resource_feedback;
+        for (uint32_t l = 0; observe_path_scores && l < config_.hrlb.k; ++l) {
             bool tbo = false;
             const char* r = nullptr;
             fresh[l] = driver->m_rdma->QueryOdinPathScore(
@@ -505,7 +506,9 @@ void HostResourceLb::ResourceDeliveredCallback(HostResourceLb* self, uint32_t ho
 
 void HostResourceLb::OnResourceFrameDelivered(uint32_t host, uint64_t epoch) {
     delivered_epochs_[host] = epoch;
-    RunSchedule("resource_frame", host);
+    if (config_.hrlb.policy != "wc") {
+        RunSchedule("resource_frame", host);
+    }
 }
 
 void HostResourceLb::RunSchedule(const char* trigger, uint32_t host) {
@@ -539,6 +542,18 @@ void HostResourceLb::RunSchedule(const char* trigger, uint32_t host) {
 bool HostResourceLb::TryCommitOneChunk(MessageState& msg, const char* trigger, uint64_t seq) {
     uint32_t k = config_.hrlb.k;
     uint32_t d = config_.hrlb.depth;
+    const bool work_conserving = config_.hrlb.policy == "wc";
+    uint32_t wc_lane = k;
+    if (work_conserving) {
+        for (uint32_t offset = 0; offset < k; ++offset) {
+            uint32_t lane = (msg.target_cursor + offset) % k;
+            if (msg.lanes[lane].outstanding_wqes < d) {
+                wc_lane = lane;
+                break;
+            }
+        }
+        if (wc_lane == k) return false;
+    }
     Ptr<RdmaDriver> driver = state_.nodes.Get(msg.src)->GetObject<RdmaDriver>();
     uint64_t base_rtt = config_.cc.global_t == 1
                             ? state_.max_rtt
@@ -562,7 +577,7 @@ bool HostResourceLb::TryCommitOneChunk(MessageState& msg, const char* trigger, u
     std::vector<uint64_t> ages(k, 0);
     std::vector<uint64_t> backlog_bytes(k, 0);
     std::vector<uint64_t> rate_bps(k, 1);
-    for (uint32_t l = 0; l < k; ++l) {
+    for (uint32_t l = 0; l < k && !work_conserving && config_.cc.odin_resource_feedback; ++l) {
         bool tbo = false;
         const char* r = nullptr;
         if (use_divergent_score) {
@@ -590,7 +605,11 @@ bool HostResourceLb::TryCommitOneChunk(MessageState& msg, const char* trigger, u
         bool hold_tail = false;
         const char* reason = "nominal";
 
-        if (coord_active) {
+        if (work_conserving) {
+            // The first iteration is the FIFO head. Nominal is observation only.
+            chosen = wc_lane;
+            reason = "wc_slot";
+        } else if (coord_active) {
             if (!fresh[nominal]) {
                 reason = "source_unknown_fallback";
             } else {
@@ -758,7 +777,7 @@ bool HostResourceLb::TryCommitOneChunk(MessageState& msg, const char* trigger, u
                 RdmaQueuePair::V5_DATA, true);
             ls.outstanding_wqes += 1;
             ls.scheduled_wqes += 1;
-            if (is_redirect) {
+            if (is_redirect || work_conserving) {
                 msg.target_cursor = (chosen + 1) % k;
             }
             LogDecision(seq, trigger, "commit", msg, chunk, nominal, chosen, is_redirect, fresh,
