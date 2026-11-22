@@ -11,6 +11,11 @@ bool HrlbConfig::ValidPhase2(uint32_t int_mode, bool periodic) const {
            std::isfinite(dyn_depth_ratio) && dyn_depth_ratio > 1.0 &&
            std::isfinite(tail_drain_eps) && tail_drain_eps >= 0.0 &&
            svc_ewma_alpha > 0.0 && svc_ewma_alpha <= 1.0 &&
+           (dyn_depth_mode == "rel" || dyn_depth_mode == "cold_only" || dyn_depth_mode == "rtt_abs") &&
+           std::isfinite(dyn_depth_rtt_mult) && dyn_depth_rtt_mult > 0.0 &&
+           ((dyn_depth_mode == "rel" && dyn_depth_rtt_mult == 20.0) || dyn_depth_enable) &&
+           (svc_obs_mode == "svc" || (svc_obs_mode == "cqe_busy" && (dyn_depth_enable || tail_drain_enable))) &&
+           (tail_fast_estimator == "ewma" || (tail_fast_estimator == "min_ewma_last" && tail_drain_enable)) &&
            (!tail_int_guard || (tail_drain_enable && int_mode >= 2)) &&
            (!(dyn_depth_enable || tail_drain_enable) ||
             (enable && policy == "wc" && !redirect && !periodic && depth == 2)) &&
@@ -78,6 +83,14 @@ bool LoadExperimentConfig(const std::string& path, ExperimentConfig* config) {
             if (!(conf >> config->hrlb.tail_drain_eps)) return false;
         } else if (key == "HRLB_SVC_EWMA_ALPHA") {
             if (!(conf >> config->hrlb.svc_ewma_alpha)) return false;
+        } else if (key == "HRLB_DYN_DEPTH_MODE") {
+            if (!(conf >> config->hrlb.dyn_depth_mode)) return false;
+        } else if (key == "HRLB_DYN_DEPTH_RTT_MULT") {
+            if (!(conf >> config->hrlb.dyn_depth_rtt_mult)) return false;
+        } else if (key == "HRLB_SVC_OBS_MODE") {
+            if (!(conf >> config->hrlb.svc_obs_mode)) return false;
+        } else if (key == "HRLB_TAIL_FAST_ESTIMATOR") {
+            if (!(conf >> config->hrlb.tail_fast_estimator)) return false;
         } else if (key == "HRLB_COORD_DELTA_PSI") {
             conf >> config->hrlb.coord_delta_psi;
         } else if (key == "HRLB_COORD_EPS_T") {

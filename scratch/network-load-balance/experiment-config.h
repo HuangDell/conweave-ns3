@@ -120,6 +120,10 @@ struct HrlbConfig {
     double dyn_depth_ratio = 1.5;
     double tail_drain_eps = 0.15;
     double svc_ewma_alpha = 0.3;
+    std::string dyn_depth_mode = "rel";
+    double dyn_depth_rtt_mult = 20.0;
+    std::string svc_obs_mode = "svc";
+    std::string tail_fast_estimator = "ewma";
     bool UsesPhase2() const {
         return policy == "seqbal_int" || dyn_depth_enable || tail_drain_enable ||
                (policy == "wc" && depth == 1);

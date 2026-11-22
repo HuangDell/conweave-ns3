@@ -78,13 +78,22 @@ void HostResourceLb::ClosePhase2Audit() {
 void HostResourceLb::ObservePhase2Completion(LaneState& lane,
                                             const ns3::RdmaQueuePair::WqeBoundary& boundary) {
     const uint64_t complete_ns = ns3::Simulator::Now().GetNanoSeconds();
-    const uint64_t service_ns = boundary.service_start_time.GetNanoSeconds();
-    if (complete_ns > service_ns) {
-        const double sample = complete_ns - service_ns;
+    uint64_t start_ns;
+    if (config_.hrlb.svc_obs_mode == "cqe_busy") {
+        const uint64_t commit_ns = boundary.commit_time.GetNanoSeconds();
+        start_ns = lane.has_prev_complete ? std::max(commit_ns, lane.prev_complete_ns) : commit_ns;
+    } else {
+        start_ns = boundary.service_start_time.GetNanoSeconds();
+    }
+    if (complete_ns > start_ns) {
+        const double sample = complete_ns - start_ns;
         const double alpha = config_.hrlb.svc_ewma_alpha;
         lane.tau_svc_ns = lane.has_tau_svc ? (1.0 - alpha) * lane.tau_svc_ns + alpha * sample : sample;
+        lane.last_svc_ns = sample;
         lane.has_tau_svc = true;
     }
+    lane.prev_complete_ns = complete_ns;
+    lane.has_prev_complete = true;
     if (lane.draining_inherited && lane.outstanding_wqes <= 1) {
         if (phase2_summary_) {
             phase2_inherited_drain_ns_.push_back(complete_ns - lane.inherited_since_ns);
@@ -125,8 +134,12 @@ uint32_t HostResourceLb::ChoosePhase2Lane(MessageState& msg, uint64_t seq, const
             backlog[l] = lane.qp->GetBytesLeft() + lane.qp->GetOnTheFly();
         }
         if (h.dyn_depth_enable) {
-            const bool slow = measured >= 2 && tau[l] > h.dyn_depth_ratio * min_tau &&
-                              tau[l] > 4.0 * base_rtt;
+            bool slow = false;
+            if (h.dyn_depth_mode == "rel") {
+                slow = measured >= 2 && tau[l] > h.dyn_depth_ratio * min_tau && tau[l] > 4.0 * base_rtt;
+            } else if (h.dyn_depth_mode == "rtt_abs") {
+                slow = tau[l] > h.dyn_depth_rtt_mult * base_rtt;
+            }
             if (!lane.has_tau_svc || slow) {
                 depth[l] = 1;
                 if (slots[l] >= 1) {
@@ -189,6 +202,7 @@ uint32_t HostResourceLb::ChoosePhase2Lane(MessageState& msg, uint64_t seq, const
             }
         }
     } else if (wc != k && h.tail_drain_enable) {
+        const bool use_last = h.tail_fast_estimator == "min_ewma_last";
         if (h.tail_int_guard) {
             for (uint32_t l = 0; l < k; ++l) {
                 if (msg.lanes[l].has_tau_svc) score(l);
@@ -205,13 +219,14 @@ uint32_t HostResourceLb::ChoosePhase2Lane(MessageState& msg, uint64_t seq, const
                     count("faster_alt_candidates");
                     if (pressure[j].fresh) count("int_fresh_evaluable");
                 }
-                raw_rate += chunk / tau[j];
+                const double fast_tau = use_last ? std::min(tau[j], msg.lanes[j].last_svc_ns) : tau[j];
+                raw_rate += chunk / fast_tau;
                 raw_bytes += backlog[j];
                 const bool healthy = !pressure[j].fresh || pressure[j].psi < h.theta ||
                                      (pressure[l].fresh &&
                                       pressure[j].psi <= pressure[l].psi + h.coord_delta_guard);
                 if (healthy) {
-                    guarded_rate += chunk / tau[j];
+                    guarded_rate += chunk / fast_tau;
                     guarded_bytes += backlog[j];
                 } else if (chosen == k) {
                     count("int_guard_pruned_lanes");

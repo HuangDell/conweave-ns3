@@ -85,6 +85,9 @@ class HostResourceLb {
         uint32_t outstanding_wqes = 0;
         uint64_t scheduled_wqes = 0;
         bool has_tau_svc = false;
+        bool has_prev_complete = false;
+        uint64_t prev_complete_ns = 0;
+        double last_svc_ns = 0.0;
         double tau_svc_ns = 0.0;
         uint32_t last_d_eff = 2;
         bool draining_inherited = false;

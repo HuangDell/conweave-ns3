@@ -419,6 +419,10 @@ HRLB_PHASE2_OPTIONS = (
     ('dyn_depth_ratio', 'HRLB_DYN_DEPTH_RATIO', 'hrlb_dyn_depth_ratio', 1.5),
     ('tail_drain_eps', 'HRLB_TAIL_DRAIN_EPS', 'hrlb_tail_drain_eps', 0.15),
     ('svc_ewma_alpha', 'HRLB_SVC_EWMA_ALPHA', 'hrlb_svc_ewma_alpha', 0.3),
+    ('dyn_depth_mode', 'HRLB_DYN_DEPTH_MODE', 'hrlb_dyn_depth_mode', 'rel'),
+    ('dyn_depth_rtt_mult', 'HRLB_DYN_DEPTH_RTT_MULT', 'hrlb_dyn_depth_rtt_mult', 20.0),
+    ('svc_obs_mode', 'HRLB_SVC_OBS_MODE', 'hrlb_svc_obs_mode', 'svc'),
+    ('tail_fast_estimator', 'HRLB_TAIL_FAST_ESTIMATOR', 'hrlb_tail_fast_estimator', 'ewma'),
 )
 
 
@@ -428,6 +432,10 @@ def validate_odin_options(args):
     seqbal = args.hrlb_policy == 'seqbal_int'
     actions = args.hrlb_dyn_depth or args.hrlb_tail_drain
     if (not math.isfinite(args.hrlb_dyn_depth_ratio) or args.hrlb_dyn_depth_ratio <= 1 or
+            not math.isfinite(args.hrlb_dyn_depth_rtt_mult) or args.hrlb_dyn_depth_rtt_mult <= 0 or
+            ((args.hrlb_dyn_depth_mode != 'rel' or args.hrlb_dyn_depth_rtt_mult != 20.0) and not args.hrlb_dyn_depth) or
+            (args.hrlb_svc_obs_mode != 'svc' and not actions) or
+            (args.hrlb_tail_fast_estimator != 'ewma' and not args.hrlb_tail_drain) or
             not math.isfinite(args.hrlb_tail_drain_eps) or args.hrlb_tail_drain_eps < 0 or
             not 0 < args.hrlb_svc_ewma_alpha <= 1 or
             (args.hrlb_tail_int_guard and (not args.hrlb_tail_drain or args.odin_int_share_mode < 2)) or
@@ -713,6 +721,10 @@ def main():
     parser.add_argument('--hrlb-tail-drain', type=int, choices=(0, 1), default=0)
     parser.add_argument('--hrlb-tail-int-guard', type=int, choices=(0, 1), default=0)
     parser.add_argument('--hrlb-dyn-depth-ratio', type=float, default=1.5)
+    parser.add_argument('--hrlb-dyn-depth-mode', choices=('rel', 'cold_only', 'rtt_abs'), default='rel')
+    parser.add_argument('--hrlb-dyn-depth-rtt-mult', type=float, default=20.0)
+    parser.add_argument('--hrlb-svc-obs-mode', choices=('svc', 'cqe_busy'), default='svc')
+    parser.add_argument('--hrlb-tail-fast-estimator', choices=('ewma', 'min_ewma_last'), default='ewma')
     parser.add_argument('--hrlb-tail-drain-eps', type=float, default=0.15)
     parser.add_argument('--hrlb-svc-ewma-alpha', type=float, default=0.3)
     parser.add_argument('--hrlb-theta', type=float, default=1.0)
