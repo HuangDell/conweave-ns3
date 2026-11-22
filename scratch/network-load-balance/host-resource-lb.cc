@@ -485,6 +485,7 @@ void HostResourceLb::OnWqeComplete(Ptr<RdmaQueuePair> qp, RdmaQueuePair::WqeBoun
         ObservePhase2Completion(msg.lanes[lane], boundary);
     }
     msg.completed_chunks += 1;
+    if (config_.hrlb.UsesCrossDepth()) ++host_cqe_counts_[msg.src];
     msg.completed_bytes += boundary.bytes;
     if (msg.completed_chunks == msg.total_chunks) {
         NS_ABORT_MSG_IF(msg.completed_bytes != msg.total_bytes,

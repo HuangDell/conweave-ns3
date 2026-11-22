@@ -11,7 +11,11 @@ bool HrlbConfig::ValidPhase2(uint32_t int_mode, bool periodic) const {
            std::isfinite(dyn_depth_ratio) && dyn_depth_ratio > 1.0 &&
            std::isfinite(tail_drain_eps) && tail_drain_eps >= 0.0 &&
            svc_ewma_alpha > 0.0 && svc_ewma_alpha <= 1.0 &&
-           (dyn_depth_mode == "rel" || dyn_depth_mode == "cold_only" || dyn_depth_mode == "rtt_abs") &&
+           (dyn_depth_mode == "rel" || dyn_depth_mode == "cold_only" || dyn_depth_mode == "rtt_abs" ||
+            dyn_depth_mode == "hybrid" || UsesCrossDepth()) &&
+           std::isfinite(cross_dst_ratio) && cross_dst_ratio > 1.0 &&
+           (cross_dst_ratio == 1.2 || (UsesCrossDepth() && dyn_depth_enable && policy == "wc" && !periodic)) &&
+           (!UsesCrossDepth() || (svc_obs_mode == "cqe_busy" && !tail_drain_enable)) &&
            std::isfinite(dyn_depth_rtt_mult) && dyn_depth_rtt_mult > 0.0 &&
            ((dyn_depth_mode == "rel" && dyn_depth_rtt_mult == 20.0) || dyn_depth_enable) &&
            (svc_obs_mode == "svc" || (svc_obs_mode == "cqe_busy" && (dyn_depth_enable || tail_drain_enable))) &&
@@ -87,6 +91,8 @@ bool LoadExperimentConfig(const std::string& path, ExperimentConfig* config) {
             if (!(conf >> config->hrlb.dyn_depth_mode)) return false;
         } else if (key == "HRLB_DYN_DEPTH_RTT_MULT") {
             if (!(conf >> config->hrlb.dyn_depth_rtt_mult)) return false;
+        } else if (key == "HRLB_CROSS_DST_RATIO") {
+            if (!(conf >> config->hrlb.cross_dst_ratio)) return false;
         } else if (key == "HRLB_SVC_OBS_MODE") {
             if (!(conf >> config->hrlb.svc_obs_mode)) return false;
         } else if (key == "HRLB_TAIL_FAST_ESTIMATOR") {

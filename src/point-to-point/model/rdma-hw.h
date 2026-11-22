@@ -123,6 +123,7 @@ class RdmaHw : public Object {
     bool QueryOdinIntScore(const std::vector<OdinResourceKey>& resources, uint64_t base_rtt_ns,
                            double* score, bool* tbo, uint64_t* max_age_ns) const;
     uint64_t GetOdinIntAuditAckCount() const { return m_odinIntAuditAckCount; }
+    bool QueryOdinLearnedFirstHop(uint64_t qp_key, OdinResourceKey* first_hop) const;
     bool QueryOdinPathScore(uint64_t qp_key, uint64_t base_rtt_ns, double* score, bool* tbo,
                             uint64_t* max_age_ns, uint64_t* min_version,
                             OdinResourceSample* bottleneck_sample, const char** reason) const;

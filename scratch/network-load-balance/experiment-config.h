@@ -122,8 +122,13 @@ struct HrlbConfig {
     double svc_ewma_alpha = 0.3;
     std::string dyn_depth_mode = "rel";
     double dyn_depth_rtt_mult = 20.0;
+    double cross_dst_ratio = 1.2;
     std::string svc_obs_mode = "svc";
     std::string tail_fast_estimator = "ewma";
+    bool UsesCrossDepth() const {
+        return dyn_depth_mode == "rel_self" || dyn_depth_mode == "rel_peer_avail" ||
+               dyn_depth_mode == "rel_cross";
+    }
     bool UsesPhase2() const {
         return policy == "seqbal_int" || dyn_depth_enable || tail_drain_enable ||
                (policy == "wc" && depth == 1);

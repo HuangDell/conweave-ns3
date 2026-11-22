@@ -412,6 +412,7 @@ def validate_physical_options(args):
     args.odin_log_flow_ids = sorted(ids)
 
 
+HRLB_CROSS_DEPTH_MODES = ('rel_self', 'rel_peer_avail', 'rel_cross')
 HRLB_PHASE2_OPTIONS = (
     ('dyn_depth_enable', 'HRLB_DYN_DEPTH_ENABLE', 'hrlb_dyn_depth', 0),
     ('tail_drain_enable', 'HRLB_TAIL_DRAIN_ENABLE', 'hrlb_tail_drain', 0),
@@ -421,6 +422,7 @@ HRLB_PHASE2_OPTIONS = (
     ('svc_ewma_alpha', 'HRLB_SVC_EWMA_ALPHA', 'hrlb_svc_ewma_alpha', 0.3),
     ('dyn_depth_mode', 'HRLB_DYN_DEPTH_MODE', 'hrlb_dyn_depth_mode', 'rel'),
     ('dyn_depth_rtt_mult', 'HRLB_DYN_DEPTH_RTT_MULT', 'hrlb_dyn_depth_rtt_mult', 20.0),
+    ('cross_dst_ratio', 'HRLB_CROSS_DST_RATIO', 'hrlb_cross_dst_ratio', 1.2),
     ('svc_obs_mode', 'HRLB_SVC_OBS_MODE', 'hrlb_svc_obs_mode', 'svc'),
     ('tail_fast_estimator', 'HRLB_TAIL_FAST_ESTIMATOR', 'hrlb_tail_fast_estimator', 'ewma'),
 )
@@ -431,7 +433,13 @@ def validate_odin_options(args):
     real_int = args.odin_int_share_mode != 0
     seqbal = args.hrlb_policy == 'seqbal_int'
     actions = args.hrlb_dyn_depth or args.hrlb_tail_drain
+    cross_depth = args.hrlb_dyn_depth_mode in HRLB_CROSS_DEPTH_MODES
     if (not math.isfinite(args.hrlb_dyn_depth_ratio) or args.hrlb_dyn_depth_ratio <= 1 or
+            not math.isfinite(args.hrlb_cross_dst_ratio) or args.hrlb_cross_dst_ratio <= 1 or
+            (args.hrlb_cross_dst_ratio != 1.2 and
+             not (cross_depth and args.hrlb_dyn_depth and args.hrlb_policy == 'wc' and
+                  not args.odin_resource_feedback)) or
+            (cross_depth and (args.hrlb_svc_obs_mode != 'cqe_busy' or args.hrlb_tail_drain)) or
             not math.isfinite(args.hrlb_dyn_depth_rtt_mult) or args.hrlb_dyn_depth_rtt_mult <= 0 or
             ((args.hrlb_dyn_depth_mode != 'rel' or args.hrlb_dyn_depth_rtt_mult != 20.0) and not args.hrlb_dyn_depth) or
             (args.hrlb_svc_obs_mode != 'svc' and not actions) or
@@ -721,8 +729,10 @@ def main():
     parser.add_argument('--hrlb-tail-drain', type=int, choices=(0, 1), default=0)
     parser.add_argument('--hrlb-tail-int-guard', type=int, choices=(0, 1), default=0)
     parser.add_argument('--hrlb-dyn-depth-ratio', type=float, default=1.5)
-    parser.add_argument('--hrlb-dyn-depth-mode', choices=('rel', 'cold_only', 'rtt_abs'), default='rel')
+    parser.add_argument('--hrlb-dyn-depth-mode',
+                        choices=('rel', 'cold_only', 'rtt_abs', *HRLB_CROSS_DEPTH_MODES, 'hybrid'), default='rel')
     parser.add_argument('--hrlb-dyn-depth-rtt-mult', type=float, default=20.0)
+    parser.add_argument('--hrlb-cross-dst-ratio', type=float, default=1.2)
     parser.add_argument('--hrlb-svc-obs-mode', choices=('svc', 'cqe_busy'), default='svc')
     parser.add_argument('--hrlb-tail-fast-estimator', choices=('ewma', 'min_ewma_last'), default='ewma')
     parser.add_argument('--hrlb-tail-drain-eps', type=float, default=0.15)

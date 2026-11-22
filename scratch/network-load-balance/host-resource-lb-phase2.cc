@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <iomanip>
+#include <iterator>
 #include <limits>
 #include <sstream>
 
@@ -51,10 +52,22 @@ bool HostResourceLb::OpenPhase2Audit() {
             "time_ns,schedule_seq,trigger,message_id,chunk_id,cursor,completed,pending,base_rtt_ns,"
             "int_ack_count,slots,backlog_bytes,d_eff,tau_svc_ns,int_psi,wc_first_lane,chosen_lane,"
             "unguarded_lane,veto_kind,seqbal_funnel,reason,counts\n");
+    if (config_.hrlb.UsesCrossDepth()) {
+        cross_audit_ = fopen((prefix + "_out_hrlb_cross_audit.csv").c_str(), "w");
+        if (!cross_audit_) return false;
+        fprintf(cross_audit_,
+                "record_type,time_ns,schedule_seq,host,message_id,chunk_id,host_cqe_count,int_ack_count,"
+                "base_choice,final_choice,choice_change,cand_lane,base_eligible,self_key_ok,cand_key,"
+                "alt_key,self_hit,n_valid,agree,disagree,neutral,denied,peer_max_age_ns\n");
+    }
     return true;
 }
 
 void HostResourceLb::ClosePhase2Audit() {
+    if (cross_audit_) {
+        fclose(cross_audit_);
+        cross_audit_ = nullptr;
+    }
     if (phase2_audit_) {
         fclose(phase2_audit_);
         phase2_audit_ = nullptr;
@@ -64,6 +77,12 @@ void HostResourceLb::ClosePhase2Audit() {
     for (auto key : kCounters) {
         fprintf(phase2_summary_, "  \"%s\": %llu,\n", key,
                 static_cast<unsigned long long>(phase2_counts_[key]));
+    }
+    if (config_.hrlb.UsesCrossDepth()) {
+        for (auto key : {"attempt", "candidate", "unchanged", "reassigned", "blocked_no_commit", "denied"}) {
+            fprintf(phase2_summary_, "  \"cross_%s\": %llu,\n", key,
+                    static_cast<unsigned long long>(cross_counts_[key]));
+        }
     }
     fprintf(phase2_summary_, "  \"inherited_drain_ns\": [");
     for (size_t i = 0; i < phase2_inherited_drain_ns_.size(); ++i) {
@@ -90,6 +109,7 @@ void HostResourceLb::ObservePhase2Completion(LaneState& lane,
         const double alpha = config_.hrlb.svc_ewma_alpha;
         lane.tau_svc_ns = lane.has_tau_svc ? (1.0 - alpha) * lane.tau_svc_ns + alpha * sample : sample;
         lane.last_svc_ns = sample;
+        lane.last_svc_sample_ns = complete_ns;
         lane.has_tau_svc = true;
     }
     lane.prev_complete_ns = complete_ns;
@@ -99,6 +119,110 @@ void HostResourceLb::ObservePhase2Completion(LaneState& lane,
             phase2_inherited_drain_ns_.push_back(complete_ns - lane.inherited_since_ns);
         }
         lane.draining_inherited = false;
+    }
+}
+
+HostResourceLb::PathDirection HostResourceLb::MsgPathDirection(const MessageState& msg,
+                                                              const ns3::RdmaHw& hw) const {
+    PathDirection result;
+    std::map<PathDirection::Key, std::pair<double, uint32_t>> groups;
+    bool measured = true;
+    result.oldest_sample_ns = std::numeric_limits<uint64_t>::max();
+    for (const auto& lane : msg.lanes) {
+        PathDirection::Key key;
+        if (!hw.QueryOdinLearnedFirstHop(lane.qp_key, &key)) return result;
+        result.lanes.push_back(key);
+        result.keys.insert(key);
+        auto& group = groups[key];
+        group.first += lane.tau_svc_ns;
+        ++group.second;
+        measured = measured && lane.has_tau_svc;
+        result.oldest_sample_ns = std::min(result.oldest_sample_ns, lane.last_svc_sample_ns);
+    }
+    result.key_ok = true;
+    result.valid = measured && groups.size() == 2;
+    if (!result.valid) return result;
+    const auto a = groups.begin();
+    const auto b = std::next(a);
+    const double mean_a = a->second.first / a->second.second;
+    const double mean_b = b->second.first / b->second.second;
+    const double ratio = config_.hrlb.cross_dst_ratio;
+    if (mean_a > ratio * mean_b || mean_b > ratio * mean_a) {
+        result.biased = true;
+        result.slow = mean_a > ratio * mean_b ? a->first : b->first;
+    }
+    return result;
+}
+
+void HostResourceLb::ApplyCrossDepth(const MessageState& msg, uint64_t seq, uint64_t now,
+                                    const ns3::RdmaHw& hw, const std::vector<uint32_t>& slots,
+                                    std::vector<uint32_t>& depth) {
+    const auto& h = config_.hrlb;
+    const bool self_only = h.dyn_depth_mode == "rel_self";
+    uint32_t base_choice = h.k, final_choice = h.k;
+    PathDirection self;
+    bool checked = false;
+    std::ostringstream prefix, candidates;
+    if (cross_audit_) {
+        prefix << now << ',' << seq << ',' << msg.src << ',' << msg.message_id << ','
+               << msg.pending_chunks.front().chunk_id << ',' << host_cqe_counts_[msg.src] << ','
+               << hw.GetOdinIntAuditAckCount();
+    }
+    for (uint32_t off = 0; off < h.k; ++off) {
+        const uint32_t l = (msg.target_cursor + off) % h.k;
+        if (base_choice == h.k && slots[l] < depth[l]) base_choice = l;
+        if (depth[l] == 2 && slots[l] == 1) {
+            if (!checked) {
+                self = MsgPathDirection(msg, hw);
+                checked = true;
+            }
+            const bool hit = self.valid && self.biased && self.slow == self.lanes[l];
+            uint32_t valid = 0, agree = 0, disagree = 0, neutral = 0;
+            uint64_t age = 0;
+            if (hit && !self_only) {
+                for (const auto& entry : messages_) {
+                    const auto& peer = entry.second;
+                    if (peer.src != msg.src || peer.message_id == msg.message_id || peer.dst == msg.dst ||
+                        peer.completed_chunks >= peer.total_chunks) continue;
+                    const auto direction = MsgPathDirection(peer, hw);
+                    if (!direction.valid || direction.keys != self.keys) continue;
+                    ++valid;
+                    if (!direction.biased) ++neutral;
+                    else if (direction.slow == self.slow) ++agree;
+                    else ++disagree;
+                    age = std::max(age, now - direction.oldest_sample_ns);
+                }
+            }
+            const bool denied = hit && (self_only ||
+                (h.dyn_depth_mode == "rel_peer_avail" ? valid > 0 : 2 * agree > valid));
+            if (denied) depth[l] = 1;
+            if (cross_audit_) {
+                ++cross_counts_["candidate"];
+                cross_counts_["denied"] += denied;
+                candidates << "candidate," << prefix.str() << ",,,," << l << ",1," << self.key_ok << ',';
+                if (self.key_ok && self.keys.size() == 2) {
+                    const auto& key = self.lanes[l];
+                    const auto& alt = key == *self.keys.begin() ? *self.keys.rbegin() : *self.keys.begin();
+                    candidates << key.switch_id << ':' << key.interface << ',' << alt.switch_id << ':' << alt.interface;
+                } else {
+                    candidates << "NA,NA";
+                }
+                candidates << ',' << hit << ',';
+                if (self_only) candidates << "NA,NA,NA,NA," << denied << ",NA\n";
+                else candidates << valid << ',' << agree << ',' << disagree << ',' << neutral << ','
+                                << denied << ',' << age << '\n';
+            }
+        }
+        if (final_choice == h.k && slots[l] < depth[l]) final_choice = l;
+    }
+    if (cross_audit_) {
+        const char* change = base_choice == final_choice ? "unchanged" :
+            final_choice == h.k ? "blocked_no_commit" : "reassigned";
+        ++cross_counts_["attempt"];
+        ++cross_counts_[change];
+        fprintf(cross_audit_, "attempt,%s,%u,%u,%s,,,,,,,,,,,,\n", prefix.str().c_str(),
+                base_choice, final_choice, change);
+        fputs(candidates.str().c_str(), cross_audit_);
     }
 }
 
@@ -135,8 +259,12 @@ uint32_t HostResourceLb::ChoosePhase2Lane(MessageState& msg, uint64_t seq, const
         }
         if (h.dyn_depth_enable) {
             bool slow = false;
-            if (h.dyn_depth_mode == "rel") {
+            if (h.dyn_depth_mode == "rel" || h.UsesCrossDepth() || h.dyn_depth_mode == "hybrid") {
                 slow = measured >= 2 && tau[l] > h.dyn_depth_ratio * min_tau && tau[l] > 4.0 * base_rtt;
+                if (h.dyn_depth_mode == "hybrid") {
+                    slow = slow || (measured >= 2 && tau[l] > h.dyn_depth_rtt_mult * base_rtt &&
+                                    tau[l] > 1.2 * min_tau);
+                }
             } else if (h.dyn_depth_mode == "rtt_abs") {
                 slow = tau[l] > h.dyn_depth_rtt_mult * base_rtt;
             }
@@ -151,8 +279,12 @@ uint32_t HostResourceLb::ChoosePhase2Lane(MessageState& msg, uint64_t seq, const
                     lane.inherited_since_ns = now;
                 }
             }
-            lane.last_d_eff = depth[l];
         }
+    }
+    if (h.UsesCrossDepth()) ApplyCrossDepth(msg, seq, now, hw, slots, depth);
+    for (uint32_t off = 0; off < k; ++off) {
+        const uint32_t l = (msg.target_cursor + off) % k;
+        if (h.dyn_depth_enable) msg.lanes[l].last_d_eff = depth[l];
         if (slots[l] < depth[l]) free.push_back(l);
     }
 

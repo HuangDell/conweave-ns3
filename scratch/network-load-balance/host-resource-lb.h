@@ -87,6 +87,7 @@ class HostResourceLb {
         bool has_tau_svc = false;
         bool has_prev_complete = false;
         uint64_t prev_complete_ns = 0;
+        uint64_t last_svc_sample_ns = 0;
         double last_svc_ns = 0.0;
         double tau_svc_ns = 0.0;
         uint32_t last_d_eff = 2;
@@ -120,6 +121,17 @@ class HostResourceLb {
         bool is_target = false;
     };
 
+    struct PathDirection {
+        using Key = ns3::RdmaHw::OdinResourceKey;
+        std::vector<Key> lanes;
+        std::set<Key> keys;
+        Key slow;
+        bool key_ok = false;
+        bool valid = false;
+        bool biased = false;
+        uint64_t oldest_sample_ns = 0;
+    };
+
     using FiveTupleKey = std::tuple<uint32_t, uint32_t, uint16_t, uint16_t, uint16_t>;
 
     static void WqeEventCallback(HostResourceLb* self, ns3::Ptr<ns3::RdmaQueuePair> qp,
@@ -137,6 +149,9 @@ class HostResourceLb {
     bool OpenPhase2Audit();
     void ClosePhase2Audit();
     void ObservePhase2Completion(LaneState& lane, const ns3::RdmaQueuePair::WqeBoundary& boundary);
+    PathDirection MsgPathDirection(const MessageState& msg, const ns3::RdmaHw& hw) const;
+    void ApplyCrossDepth(const MessageState& msg, uint64_t seq, uint64_t now, const ns3::RdmaHw& hw,
+                         const std::vector<uint32_t>& slots, std::vector<uint32_t>& depth);
     uint32_t ChoosePhase2Lane(MessageState& msg, uint64_t seq, const char* trigger,
                               uint64_t base_rtt, const ns3::RdmaHw& hw, const char** reason);
     void SealMessage(MessageState& msg);
@@ -171,6 +186,9 @@ class HostResourceLb {
     std::string decision_state_;
     FILE* phase2_audit_ = nullptr;
     FILE* phase2_summary_ = nullptr;
+    FILE* cross_audit_ = nullptr;
+    std::map<uint32_t, uint64_t> host_cqe_counts_;
+    std::map<std::string, uint64_t> cross_counts_;
     std::map<std::string, uint64_t> phase2_counts_;
     std::vector<uint64_t> phase2_inherited_drain_ns_;
     FILE* lane_output_ = NULL;

@@ -197,6 +197,13 @@ const char* RdmaHw::ReadOdinIntHop(const OdinResourceKey& resource, uint64_t now
     return nullptr;
 }
 
+bool RdmaHw::QueryOdinLearnedFirstHop(uint64_t qp_key, OdinResourceKey* first_hop) const {
+    auto path = m_odinIntPaths.find(qp_key);
+    if (path == m_odinIntPaths.end() || path->second.empty()) return false;
+    *first_hop = path->second.front();
+    return true;
+}
+
 bool RdmaHw::QueryOdinIntScore(const std::vector<OdinResourceKey>& resources, uint64_t base_rtt_ns,
                                double* score, bool* tbo, uint64_t* max_age_ns) const {
     *score = 0.0;
