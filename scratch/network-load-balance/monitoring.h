@@ -89,6 +89,7 @@ class SimulationMonitor {
     FILE* voq_detail_output_ = NULL;
     FILE* uplink_output_ = NULL;
     FILE* odin_int_output_ = NULL;
+    FILE* odin_align_output_ = nullptr;
     FILE* conn_output_ = NULL;
     FILE* path_delay_output_ = NULL;
     FILE* ooo_event_output_ = NULL;

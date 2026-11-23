@@ -161,6 +161,14 @@ bool LoadExperimentConfig(const std::string& path, ExperimentConfig* config) {
             conf >> config->cc.odin_gamma;
         } else if (key == "ODIN_BETA_MBPS") {
             conf >> config->cc.odin_beta_mbps;
+        } else if (key == "ODIN_PSI_FLOOR") {
+            if (!(conf >> config->cc.odin_psi_floor)) return false;
+        } else if (key == "ODIN_PATH_ALIGN_ALPHA") {
+            if (!(conf >> config->cc.odin_path_align_alpha)) return false;
+        } else if (key == "ODIN_CC_SCOPE") {
+            if (!(conf >> config->cc.odin_cc_scope)) return false;
+        } else if (key == "ODIN_ALIGN_AUDIT_FILE") {
+            if (!(conf >> config->io.odin_align_audit_file)) return false;
         } else if (key == "ODIN_TBO_RATIO") {
             conf >> config->cc.odin_tbo_ratio;
         } else if (key == "ODIN_LOG") {

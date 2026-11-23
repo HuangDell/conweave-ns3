@@ -62,6 +62,8 @@ class RdmaHw : public Object {
     std::set<int32_t> m_odinTraceFlowIds;
     double m_odinEta, m_odinGamma;
     DataRate m_odinBeta;
+    double m_odinPsiFloor, m_odinPathAlignAlpha;
+    uint32_t m_odinCcScope;
     TracedCallback<Ptr<RdmaQueuePair>, const OdinEvent&> m_traceOdin;
     void HandleAckOdin(Ptr<RdmaQueuePair> qp, CustomHeader& ch, Ptr<const Packet> packet);
     void TraceOdin(Ptr<RdmaQueuePair> qp, OdinEvent event);
@@ -73,6 +75,7 @@ class RdmaHw : public Object {
     uint64_t m_odinIntFreshnessNs = 16000, m_odinIntProbeIntervalNs = 16000;
     uint64_t m_odinIntMaxRttNs = 0;
     FILE* m_odinIntAudit = nullptr;
+    FILE* m_odinAlignAuditFile = nullptr;
     uint64_t m_odinResourceStartNs = 0, m_odinResourceVersion = 0;
     uint64_t m_odinResourceWindowNs = 32000, m_odinResourceFreshnessNs = 16000;
     uint32_t m_odinExpectedMappingVersion = 1;
@@ -321,10 +324,13 @@ class RdmaHw : public Object {
     void HandleSharedIntAck(Ptr<RdmaQueuePair> qp, uint64_t key, Ptr<const Packet> packet,
                             const CustomHeader& ch);
     void ForgetSharedIntPath(uint64_t key);
+    typedef std::map<uint64_t, uint64_t> OdinRateSnapshot;
     bool ApplyIntFeedback(Ptr<RdmaQueuePair> qp, uint64_t key, uint64_t interval_ns,
-                          double psi, bool tbo, OdinEvent& event, bool is_async_trigger = false);
+                          double psi, bool tbo, OdinEvent& event, bool is_async_trigger,
+                          const OdinRateSnapshot* snapshot_rates = nullptr, uint64_t ack_uid = 0);
     bool TrySharedIntFeedback(Ptr<RdmaQueuePair> qp, uint64_t key, uint64_t ack_uid,
-                              const char* trigger, uint32_t seq, bool apply);
+                              const char* trigger, uint32_t seq, bool apply,
+                              const OdinRateSnapshot* snapshot_rates);
     void TraceInt(const char* event, uint64_t ack_uid, uint64_t key, const char* reason,
                   OdinResourceKey resource = OdinResourceKey(), uint64_t rx_ns = 0,
                   uint64_t dt_ns = 0, uint64_t measured_ns = 0, uint64_t value = 0,

@@ -24,7 +24,7 @@ void OdinController::Remove(uint64_t key) {
 
 OdinController::Update OdinController::PreviewFeedback(
     uint64_t key, double psi, bool tbo, double eta, double gamma,
-    uint64_t beta, uint64_t minimum) const {
+    uint64_t beta, uint64_t minimum, double psi_floor) const {
     auto it = rates_.find(key);
     if (it == rates_.end() || !std::isfinite(psi) || psi <= 0 ||
         !(eta > 0 && eta <= 1) || !(gamma > 0 && gamma <= 1) ||
@@ -37,7 +37,8 @@ OdinController::Update OdinController::PreviewFeedback(
     r.sum_before = sum_;
     r.u_before = u_;
     r.beta = tbo && psi < 1.2 ? 0 : beta;
-    r.temporary = eta * r.old_rate / psi + r.beta;
+    const double psi_eff = (psi_floor > 0.0 && psi < psi_floor) ? psi_floor : psi;
+    r.temporary = eta * r.old_rate / psi_eff + r.beta;
     // Do not clamp the intermediate rate or smooth U a second time.
     r.u_after = gamma * ((double(sum_ - r.old_rate) + r.temporary) / capacity_) +
                 (1 - gamma) * u_;
@@ -65,11 +66,16 @@ OdinController::Update OdinController::PreviewFeedback(
 
 OdinController::Update OdinController::OnFeedback(
     uint64_t key, double psi, bool tbo, double eta, double gamma,
-    uint64_t beta, uint64_t minimum) {
-    Update r = PreviewFeedback(key, psi, tbo, eta, gamma, beta, minimum);
+    uint64_t beta, uint64_t minimum, double psi_floor) {
+    Update r = PreviewFeedback(key, psi, tbo, eta, gamma, beta, minimum, psi_floor);
     rates_.at(key) = r.rate;
     sum_ = r.sum_after;
     u_ = r.u_after;
     return r;
+}
+void OdinController::OverrideRate(uint64_t key, uint64_t new_rate) {
+    auto& rate = rates_.at(key);
+    sum_ = sum_ - rate + new_rate;
+    rate = new_rate;
 }
 }  // namespace ns3

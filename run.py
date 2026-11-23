@@ -453,6 +453,14 @@ def validate_odin_options(args):
         raise ValueError('Invalid Phase 2 HRLB configuration')
     if args.hrlb_gate_inflight0 == 2 and not real_int:
         raise ValueError('--hrlb-gate-inflight0 2 requires extended INT ACK feedback')
+    if not 0.0 <= args.odin_psi_floor < 1.0 or (args.odin_psi_floor and not real_int):
+        raise ValueError('--odin-psi-floor must be in [0, 1); a nonzero floor requires extended INT')
+    if (not 0.0 <= args.odin_path_align_alpha <= 0.5 or
+            (args.odin_path_align_alpha and args.odin_int_share_mode < 3)):
+        raise ValueError('--odin-path-align-alpha must be in [0, 0.5]; nonzero alignment requires INT mode >= 3')
+    if args.odin_cc_scope != 'all' and (not real_int or not (
+            args.odin_psi_floor or args.odin_path_align_alpha or args.odin_beta_mbps != 5.0)):
+        raise ValueError('A non-default --odin-cc-scope requires extended INT and a non-default CC parameter')
     if args.cc != 'odin':
         if (args.odin_log or args.odin_resource_feedback or args.hrlb_enable or
                 args.odin_int_share_mode or args.odin_int_audit):
@@ -700,6 +708,9 @@ def main():
     parser.add_argument('--odin-eta', type=float, default=0.95)
     parser.add_argument('--odin-gamma', type=float, default=0.1)
     parser.add_argument('--odin-beta-mbps', type=float, default=5.0)
+    parser.add_argument('--odin-psi-floor', type=float, default=0.0)
+    parser.add_argument('--odin-path-align-alpha', type=float, default=0.0)
+    parser.add_argument('--odin-cc-scope', choices=('all', 'fg_only', 'bg_only'), default='all')
     parser.add_argument('--odin-tbo-ratio', type=float, default=1.0 / 16)
     parser.add_argument('--odin-log', type=int, choices=(0, 1), default=0)
     parser.add_argument('--odin-resource-feedback', type=int, choices=(0, 1), default=0,
@@ -1225,6 +1236,12 @@ def main():
                    f"ODIN_BETA_MBPS {args.odin_beta_mbps}\n"
                    f"ODIN_TBO_RATIO {args.odin_tbo_ratio}\nODIN_LOG {args.odin_log}\n"
                    f"ODIN_OUTPUT_FILE mix/output/{config_ID}/{config_ID}_out_odin.csv\n")
+        for field, default in (('psi_floor', 0.0), ('path_align_alpha', 0.0), ('cc_scope', 'all')):
+            value = getattr(args, 'odin_' + field)
+            if value != default:
+                config += f'ODIN_{field.upper()} {value}\n'
+        if args.odin_path_align_alpha:
+            config += f'ODIN_ALIGN_AUDIT_FILE mix/output/{config_ID}/{config_ID}_out_odin_align_audit.csv\n'
         if args.odin_resource_feedback:
             for key, value in [('FEEDBACK', 1), ('HOST', args.odin_resource_host),
                                ('PERIOD_NS', args.odin_resource_period_ns),
@@ -1395,7 +1412,8 @@ def main():
         manifest['config']['odin'] = dict(
             implementation='odin-paper-ns3-v1', eta=args.odin_eta, gamma=args.odin_gamma,
             beta_mbps=args.odin_beta_mbps, tbo_ratio=args.odin_tbo_ratio, log=args.odin_log,
-            initial_u=1, initial_rate='nic_line_rate', active_until='final_ack',
+            psi_floor=args.odin_psi_floor, path_align_alpha=args.odin_path_align_alpha,
+            cc_scope=args.odin_cc_scope, initial_u=1, initial_rate='nic_line_rate', active_until='final_ack',
             sample='current_queue_max_hop_no_extra_ewma', global_t=0)
         if args.odin_resource_feedback:
             manifest['config']['odin']['resource_feedback'] = dict(

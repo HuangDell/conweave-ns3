@@ -56,6 +56,18 @@ bool ConfigureSimulationDefaults(const ExperimentConfig& config) {
         std::cerr << "Extended INT requires ACK Odin and WC without periodic reports\n";
         return false;
     }
+    const auto& cc = config.cc;
+    if (!(cc.odin_psi_floor >= 0.0 && cc.odin_psi_floor < 1.0) ||
+        !(cc.odin_path_align_alpha >= 0.0 && cc.odin_path_align_alpha <= 0.5) ||
+        (cc.odin_psi_floor != 0.0 && !real_int) ||
+        (cc.odin_path_align_alpha != 0.0 && cc.odin_int_share_mode < 3) ||
+        (cc.odin_cc_scope != "all" &&
+         ((cc.odin_cc_scope != "fg_only" && cc.odin_cc_scope != "bg_only") ||
+          !real_int || (cc.odin_psi_floor == 0.0 && cc.odin_path_align_alpha == 0.0 &&
+                        cc.odin_beta_mbps == 5.0)))) {
+        std::cerr << "Invalid Odin shared INT CC tuning configuration\n";
+        return false;
+    }
     if (config.cc.mode == CC_MODE_ODIN) {
         bool valid_odin_base =
             config.lb.mode == LbMode::kEcmp && !config.cc.enable_irn && config.cc.enable_pfc &&
@@ -141,6 +153,11 @@ void InstallRdmaHosts(const ExperimentConfig& config, SimulationState& state, ui
         hardware->m_odinExpectedMappingVersion = config.hrlb.mapping_version;
         hardware->SetAttribute("OdinEta", DoubleValue(config.cc.odin_eta));
         hardware->SetAttribute("OdinGamma", DoubleValue(config.cc.odin_gamma));
+        hardware->SetAttribute("OdinPsiFloor", DoubleValue(config.cc.odin_psi_floor));
+        hardware->SetAttribute("OdinPathAlignAlpha", DoubleValue(config.cc.odin_path_align_alpha));
+        const auto& scope = config.cc.odin_cc_scope;
+        const uint32_t cc_scope = scope == "all" ? 0 : (scope == "fg_only" ? 1 : 2);
+        hardware->SetAttribute("OdinCcScope", UintegerValue(cc_scope));
         hardware->SetAttribute("OdinBeta", DataRateValue(DataRate(
             static_cast<uint64_t>(config.cc.odin_beta_mbps * 1e6))));
         hardware->SetAttribute("RateDecreaseInterval",

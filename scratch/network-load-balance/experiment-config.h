@@ -151,6 +151,8 @@ struct HrlbConfig {
 
 struct CongestionControlConfig {
     uint32_t mode = 1;
+    double odin_psi_floor = 0.0, odin_path_align_alpha = 0.0;
+    std::string odin_cc_scope = "all";
     double odin_eta = 0.95, odin_gamma = 0.1, odin_beta_mbps = 5;
     double odin_tbo_ratio = 1.0 / 16;
     uint32_t odin_resource_feedback = 0, odin_resource_host = 0;
@@ -220,7 +222,7 @@ struct IoConfig {
     std::string flow_file;
     std::string flow_input_file = "flow.txt";
     std::string odin_output_file = "odin.csv";
-    std::string odin_int_output_file;
+    std::string odin_int_output_file, odin_align_audit_file;
     std::string fct_output_file = "fct.txt";
     std::string pfc_output_file = "pfc.txt";
     std::string cnp_output_file = "cnp.txt";

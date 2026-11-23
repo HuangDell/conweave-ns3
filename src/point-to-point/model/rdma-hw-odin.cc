@@ -134,7 +134,8 @@ void RdmaHw::TraceInt(const char* event, uint64_t ack_uid, uint64_t key, const c
 }
 
 bool RdmaHw::ApplyIntFeedback(Ptr<RdmaQueuePair> qp, uint64_t key, uint64_t interval_ns,
-                              double psi, bool tbo, OdinEvent& event, bool is_async_trigger) {
+                              double psi, bool tbo, OdinEvent& event, bool is_async_trigger,
+                              const OdinRateSnapshot* snapshot_rates, uint64_t ack_uid) {
     uint64_t now = Simulator::Now().GetNanoSeconds();
     auto skip = [&](const char* reason) {
         event.reason = reason;
@@ -147,17 +148,70 @@ bool RdmaHw::ApplyIntFeedback(Ptr<RdmaQueuePair> qp, uint64_t key, uint64_t inte
     if (now - qp->odin.last_update_ns < interval_ns) return skip("cooldown");
     if (!std::isfinite(psi) || psi <= 0) return skip("resource_zero_psi");
     auto& controller = m_nic[qp->odin.nic].odin;
-    const uint64_t beta = m_odinBeta.GetBitRate();
+    const bool in_scope = m_odinCcScope == 0 || (m_odinCcScope == 1 && qp->m_persistent) ||
+                          (m_odinCcScope == 2 && !qp->m_persistent);
+    const uint64_t beta = in_scope ? m_odinBeta.GetBitRate() : 5000000;
+    const double psi_floor = in_scope ? m_odinPsiFloor : 0.0;
+    const double alpha = in_scope && snapshot_rates ? m_odinPathAlignAlpha : 0.0;
     const uint64_t minimum = m_minRate.GetBitRate();
     const bool gate_active =
         m_odinGateInflight0 == 1 || (m_odinGateInflight0 == 2 && is_async_trigger);
-    if (gate_active && !qp->GetOnTheFly() &&
-        controller.PreviewFeedback(key, psi, tbo, m_odinEta, m_odinGamma, beta,
-                                   minimum).rate < qp->m_rate.GetBitRate()) {
-        return skip("inflight0_no_decrease");
+    const uint64_t inflight = qp->GetOnTheFly();
+    uint64_t raw = 0, final_rate = 0;
+    if (alpha > 0.0 || (gate_active && inflight == 0)) {
+        raw = controller.PreviewFeedback(key, psi, tbo, m_odinEta, m_odinGamma, beta,
+                                         minimum, psi_floor).rate;
+        final_rate = raw;
     }
+    std::vector<uint64_t> members;
+    std::vector<std::pair<uint64_t, uint64_t>> path_unsent;
+    double mean = raw;
+    if (alpha > 0.0) {
+        const auto& path = m_odinIntPaths.at(key);
+        double sum = 0.0;
+        for (const auto& entry : *snapshot_rates) {
+            const auto& sibling = m_qpMap.at(entry.first);
+            auto learned = m_odinIntPaths.find(entry.first);
+            if (sibling->odin.nic != qp->odin.nic || !sibling->odin.active ||
+                learned == m_odinIntPaths.end() || learned->second != path)
+                continue;
+            const uint64_t unsent = sibling->GetBytesLeft();
+            if (m_odinAlignAuditFile) path_unsent.emplace_back(entry.first, unsent);
+            if (unsent == 0) continue;
+            members.push_back(entry.first);
+            sum += entry.first == key ? raw : entry.second;
+        }
+        mean = sum / members.size();  // The evaluated QP is itself eligible.
+        if (members.size() >= 2) {
+            const double blended = std::fma(1 - alpha, double(raw), alpha * mean);
+            final_rate = static_cast<uint64_t>(
+                std::max(double(minimum), std::min(double(controller.Capacity()), blended)));
+        }
+    }
+    const bool gate_blocked = gate_active && inflight == 0 && final_rate < qp->m_rate.GetBitRate();
+    if (alpha > 0.0 && m_odinAlignAuditFile) {
+        uint64_t hash = 14695981039346656037ULL;
+        for (uint64_t member : members) hash = (hash ^ member) * 1099511628211ULL;
+        fprintf(m_odinAlignAuditFile, "%lu,%lu,%lu,%zu,%lu,%.17g,%lu,%lu,%u,%lu,%u,%s,",
+                now, ack_uid, key, members.size(), raw, mean, final_rate, inflight,
+                unsigned(gate_blocked), hash, m_node->GetId(), event.reason);
+        for (size_t i = 0; i < members.size(); ++i)
+            fprintf(m_odinAlignAuditFile, "%s%lu", i ? "|" : "", members[i]);
+        fprintf(m_odinAlignAuditFile, ",");
+        for (size_t i = 0; i < path_unsent.size(); ++i)
+            fprintf(m_odinAlignAuditFile, "%s%lu:%lu", i ? "|" : "", path_unsent[i].first,
+                    path_unsent[i].second);
+        fprintf(m_odinAlignAuditFile, "\n");
+    }
+    if (gate_blocked) return skip("inflight0_no_decrease");
     event.event = "update";
-    event.control = controller.OnFeedback(key, psi, tbo, m_odinEta, m_odinGamma, beta, minimum);
+    event.control = controller.OnFeedback(key, psi, tbo, m_odinEta, m_odinGamma, beta,
+                                          minimum, psi_floor);
+    if (alpha > 0.0 && final_rate != raw) {
+        controller.OverrideRate(key, final_rate);
+        event.control.rate = final_rate;
+        event.control.sum_after = controller.Sum();
+    }
     qp->odin.last_update_ns = now;
     event.next_before_ns = qp->m_nextAvail.GetNanoSeconds();
     ChangeRate(qp, DataRate(event.control.rate));
@@ -227,7 +281,8 @@ bool RdmaHw::QueryOdinIntScore(const std::vector<OdinResourceKey>& resources, ui
 }
 
 bool RdmaHw::TrySharedIntFeedback(Ptr<RdmaQueuePair> qp, uint64_t key, uint64_t ack_uid,
-                                  const char* trigger, uint32_t seq, bool apply) {
+                                  const char* trigger, uint32_t seq, bool apply,
+                                  const OdinRateSnapshot* snapshot_rates) {
     if (!qp || !qp->odin.active || !qp->GetBytesLeft()) return false;
     auto path = m_odinIntPaths.find(key);
     if (path == m_odinIntPaths.end()) return false;
@@ -252,7 +307,8 @@ bool RdmaHw::TrySharedIntFeedback(Ptr<RdmaQueuePair> qp, uint64_t key, uint64_t 
     event.ack_seq = seq;
     // The frozen foreign threshold T_share is the same as T_min.
     const bool is_async = std::strcmp(trigger, "self") != 0;
-    const bool updated = ApplyIntFeedback(qp, key, m_odinIntMinUpdateNs, psi, tbo, event, is_async);
+    const bool updated = ApplyIntFeedback(qp, key, m_odinIntMinUpdateNs, psi, tbo, event, is_async,
+                                          snapshot_rates, ack_uid);
     TraceInt("candidate", ack_uid, key, updated ? "update" : event.reason);
     return updated;
 }
@@ -328,13 +384,20 @@ void RdmaHw::HandleSharedIntAck(Ptr<RdmaQueuePair> qp, uint64_t key, Ptr<const P
         }
     }
 
+    OdinRateSnapshot snapshot_rates;
+    const bool align = m_odinIntShareMode >= 3 && m_odinPathAlignAlpha > 0.0;
+    if (align) {
+        for (const auto& entry : m_qpMap)
+            snapshot_rates.emplace(entry.first, entry.second->m_rate.GetBitRate());
+    }
+    const OdinRateSnapshot* snapshot = align ? &snapshot_rates : nullptr;
     if (qp && GetQp(key) == qp) {
         auto learned = m_odinIntPaths.emplace(key, path);
         NS_ABORT_MSG_IF(learned.first->second != path, "Odin INT changed a fixed QP path");
         if (learned.second) {
             for (const auto& resource : path) m_odinIntSubscribers[resource].insert(key);
         }
-        TrySharedIntFeedback(qp, key, uid, probe ? "probe_self" : "self", ch.ack.seq, true);
+        TrySharedIntFeedback(qp, key, uid, probe ? "probe_self" : "self", ch.ack.seq, true, snapshot);
     }
     candidates.erase(key);
     std::vector<std::pair<uint64_t, Ptr<RdmaQueuePair>>> ordered;
@@ -349,7 +412,7 @@ void RdmaHw::HandleSharedIntAck(Ptr<RdmaQueuePair> qp, uint64_t key, Ptr<const P
     for (const auto& candidate : ordered) {
         auto other = candidate.second;
         if (TrySharedIntFeedback(other, candidate.first, uid, "foreign", ch.ack.seq,
-                                 m_odinIntShareMode >= 3)) {
+                                 m_odinIntShareMode >= 3, snapshot)) {
             ++wakeups;
             if (!qp || other->odin.nic != qp->odin.nic) extra_nics.insert(other->odin.nic);
         }

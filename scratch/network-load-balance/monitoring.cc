@@ -75,6 +75,13 @@ bool SimulationMonitor::OpenCoreOutputs() {
                                   "rx_ns,anchor_dt_ns,true_measured_ns,value,"
                                   "bytes_mod,queue_bytes,line_bps,tbo\n");
     }
+    if (!config_.io.odin_align_audit_file.empty()) {
+        odin_align_output_ = fopen(config_.io.odin_align_audit_file.c_str(), "w");
+        if (!odin_align_output_) return false;
+        fprintf(odin_align_output_, "time_ns,ack_uid,qp_key,member_count,r_raw_bps,snapshot_mean_bps,"
+                                    "r_final_bps,inflight_bytes,gate_blocked,member_keys_hash,"
+                                    "src,trigger,member_keys,path_unsent_bytes\n");
+    }
     if (config_.monitoring.odin_log) {
         odin_output_ = fopen(config_.io.odin_output_file.c_str(), "w");
         if (!odin_output_) return false;
@@ -208,6 +215,7 @@ void SimulationMonitor::CloseOutputs() {
     }
     CloseFile(&odin_output_);
     CloseFile(&odin_int_output_);
+    CloseFile(&odin_align_output_);
     CloseFile(&pfc_output_);
     CloseFile(&fct_output_);
     CloseFile(&flow_input_output_);
@@ -326,6 +334,7 @@ void SimulationMonitor::ConnectPfcTrace(Ptr<QbbNetDevice> device) {
 
 void SimulationMonitor::ConnectQpComplete(Ptr<RdmaDriver> driver) {
     driver->m_rdma->m_odinIntAudit = odin_int_output_;
+    driver->m_rdma->m_odinAlignAuditFile = odin_align_output_;
     if (odin_output_) driver->m_rdma->TraceConnectWithoutContext(
         "OdinControl", MakeBoundCallback(&SimulationMonitor::OdinTrace, this));
     if (native_resources_) native_resources_->ConnectDriver(driver);

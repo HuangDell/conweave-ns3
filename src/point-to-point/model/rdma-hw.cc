@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <climits>
+#include <cmath>
 
 #include <cstdio>
 
@@ -48,6 +49,15 @@ TypeId RdmaHw::GetTypeId(void) {
                           MakeDoubleAccessor(&RdmaHw::m_odinGamma), MakeDoubleChecker<double>(0, 1))
             .AddAttribute("OdinBeta", "Odin additive increment", DataRateValue(DataRate("5Mb/s")),
                           MakeDataRateAccessor(&RdmaHw::m_odinBeta), MakeDataRateChecker())
+            .AddAttribute("OdinPsiFloor", "Odin shared INT multiplicative denominator floor",
+                          DoubleValue(0.0), MakeDoubleAccessor(&RdmaHw::m_odinPsiFloor),
+                          MakeDoubleChecker<double>(0.0, std::nextafter(1.0, 0.0)))
+            .AddAttribute("OdinPathAlignAlpha", "Odin same-path rate alignment weight",
+                          DoubleValue(0.0), MakeDoubleAccessor(&RdmaHw::m_odinPathAlignAlpha),
+                          MakeDoubleChecker<double>(0.0, 0.5))
+            .AddAttribute("OdinCcScope", "Odin shared INT tuning scope (all, foreground, background)",
+                          UintegerValue(0), MakeUintegerAccessor(&RdmaHw::m_odinCcScope),
+                          MakeUintegerChecker<uint32_t>(0, 2))
             .AddTraceSource("OdinControl", "Synchronous Odin control/lifecycle audit",
                             MakeTraceSourceAccessor(&RdmaHw::m_traceOdin))
             .AddAttribute("CcMode", "which mode of DCQCN is running", UintegerValue(0),
